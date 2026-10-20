@@ -16,5 +16,7 @@ the talk:
 * Apache Arrow
 * Lance
 
+It is also available [here](https://sweb.github.io/dataformats/)!
+
 The numbers presented in the Explorer are based on the benchmark scripts in [bench](bench/).
 Fair warning: Both were generated using Claude Code.
