@@ -1,0 +1,13 @@
+# bench/: measurement rig.
+fastavro>=1.9
+pyarrow>=16
+numpy>=1.26
+pandas>=2.2
+protobuf>=5
+pylance>=0.20
+pyiceberg[sql-sqlite,pyarrow]>=0.9
+confluent-kafka>=2.5
+zstandard>=0.22
+backports.zstd>=1.0
+cramjam>=2.8
+matplotlib>=3.8

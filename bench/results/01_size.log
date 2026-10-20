@@ -1,0 +1,22 @@
+memory guard: budget 4 GiB, 49 GiB available
+10,000,000 rows
+  row formats encoded in 55s
+  avro/null: 22s
+  avro/deflate: 26s
+  avro/snappy: 23s
+  avro/zstandard: 23s
+
+format                                                  total   B/record  vs JSON
+JSON lines                                            1.4 GiB      150.5  100.0%
+Protobuf (length-delimited)                         365.9 MiB       38.4   25.5%
+Avro binary (Kafka wire, 5B registry header)        348.1 MiB       36.5   24.3%
+Avro container (null)                               300.8 MiB       31.5   21.0%
+Avro container (deflate)                            119.3 MiB       12.5    8.3%
+Avro container (snappy)                             162.4 MiB       17.0   11.3%
+Avro container (zstandard)                          128.2 MiB       13.4    8.9%
+Parquet (none)                                      122.5 MiB       12.8    8.5%
+Parquet (snappy)                                    103.1 MiB       10.8    7.2%
+Parquet (zstd)                                       75.4 MiB        7.9    5.3%
+Lance                                               126.2 MiB       13.2    8.8%
+
+-> bench/results/01_size.json

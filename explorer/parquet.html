@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parquet Layout Explorer</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+.tp-row { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0 10px; }
+.tp-cell { --h: 220; font-family: var(--mono); font-size: 0.72rem; padding: 2px 5px; border-radius: 4px; background: hsl(var(--h) var(--s-bg) var(--l-bg)); color: hsl(var(--h) 55% var(--l-fg)); white-space: nowrap; max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
+.tp-cell.rowsep { margin-right: 8px; }
+.rg-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.rg { font-family: var(--mono); font-size: 0.75rem; border-radius: 8px; padding: 4px 8px; border: 1px solid var(--border); cursor: pointer; }
+.rg:hover, .rg:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.rg.read { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.rg.skip { background: var(--panel-2); color: var(--muted); text-decoration: line-through; }
+.qline { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; font-family: var(--mono); font-size: 0.92rem; }
+.qline label { display: inline-flex; gap: 4px; align-items: center; }
+.kw { color: var(--info); font-weight: 700; }
+.colsw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; background: hsl(var(--h) 70% 55%); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <div class="nav"><a href="index.html">Explorers</a><a href="protobuf.html">Protobuf</a><a href="avro.html">Avro</a><a class="cur" href="parquet.html">Parquet</a><a href="iceberg.html">Iceberg</a><a href="arrow.html">Arrow</a><a href="lance.html">Lance</a></div>
+      <h1>Apache Parquet File Layout</h1>
+      <p class="sub">Transpose, encode, describe yourself in the footer, skip what you never need</p>
+    </div>
+    <div class="right-tools">
+      <div class="pills" id="presets"></div>
+      <button class="icon" id="theme" title="Toggle light / dark">&#9681;</button>
+    </div>
+  </header>
+
+  <section class="grid g2">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">1</span>Rows become columns</h3><span class="chip muted" id="nrows"></span></div>
+      <div class="small muted">Row-oriented (JSON lines, Avro): one record after another</div>
+      <div class="tp-row" id="tpRows"></div>
+      <div class="small muted">Column-oriented (Parquet, inside one row group): one column after another</div>
+      <div class="tp-row" id="tpCols"></div>
+      <p class="note">Same values, transposed. Layout alone saves nothing. It buys two things: a query reads only the columns it needs, and like values sit next to each other, so they encode well.</p>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3><span class="step">2</span>Writer decisions<sup data-cite="parquet-encodings"></sup></h3><span class="chip" id="fsize"></span></div>
+      <div class="controls" style="margin-bottom:10px">
+        <label class="ctl">rows <select id="rows"><option>200</option><option selected>2000</option><option>20000</option></select></label>
+        <label class="ctl">sort by <select id="sort"><option value="">arrival (ts)</option><option>location</option><option>temp_c</option><option>device_id</option></select></label>
+        <label class="ctl">row group <select id="rg"><option value="0.125" selected>1/8 of rows</option><option value="0.25">1/4</option><option value="0.5">1/2</option><option value="1">all rows</option></select></label>
+        <label class="ctl">codec <select id="codec"><option value="none">UNCOMPRESSED</option><option value="gzip">GZIP</option></select></label>
+      </div>
+      <div style="overflow-x:auto"><table class="t" id="cols"></table></div>
+      <div id="err" class="error hidden"></div>
+      <div class="flex" style="margin-top:10px"><button class="btn small" id="dl">Download .parquet</button><span class="small muted">a real file: try it with pyarrow or DuckDB</span></div>
+    </div>
+  </section>
+
+  <section class="card structure" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">3</span>File structure<sup data-cite="parquet-format parquet-thrift thrift-compact"></sup></h3><span class="small muted">PAR1, row groups of column chunks, footer, footer length, PAR1</span></div>
+    <div id="fmap" style="margin-bottom:6px"></div>
+    <div id="structure"></div>
+  </section>
+
+  <section class="grid g-hex">
+    <div class="card">
+      <div class="card-h"><h3>Binary stream view</h3><span class="chip" id="range"></span></div>
+      <div id="hex"></div>
+      <div class="legend" id="legend"></div>
+      <p class="note">Click a byte to select it, click again to move up one level. Try a location chunk: dictionary page, then RLE runs.</p>
+    </div>
+    <div class="card insp">
+      <div class="card-h"><h3>Field inspector</h3><span class="chip" id="selname"></span></div>
+      <div id="inspector"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h3><span class="step">4</span>Query: what does the reader actually fetch?<sup data-cite="parquet-thrift"></sup></h3><div class="pills" id="queries"></div></div>
+    <div class="qline">
+      <span class="kw">SELECT</span><span id="selcols" class="flex"></span>
+      <span class="kw">FROM</span> readings
+      <span class="kw">WHERE</span>
+      <select id="wcol"></select>
+      <select id="wop"><option>&gt;</option><option>&gt;=</option><option>=</option><option>&lt;</option><option>&lt;=</option><option>!=</option></select>
+      <input type="text" id="wval" size="16">
+      <label class="ctl"><input type="checkbox" id="nowhere"> no WHERE</label>
+      <span class="spacer"></span>
+      <label class="ctl"><input type="checkbox" id="dimhex" checked> dim unread bytes in hex view</label>
+    </div>
+    <div class="grid g2" style="margin-top:14px;margin-bottom:0">
+      <div>
+        <div id="qbars"></div>
+        <div class="rg-list" id="rglist"></div>
+        <p class="note" id="qnote"></p>
+      </div>
+      <div>
+        <div class="small muted" style="margin-bottom:4px" id="qcount"></div>
+        <pre class="json" id="qsample"></pre>
+      </div>
+    </div>
+    <p class="note">Fetched byte ranges are marked green in the file map above and stay bright in the hex view; everything else is never read.</p>
+  </section>
+
+  <section class="card sources" id="sources"></section>
+</div>
+
+<script src="common.js"></script>
+<script src="sources.js"></script>
+<script src="parquet-codec.js"></script>
+<script src="ui.js"></script>
+<script>
+"use strict";
+const { PQ, UI } = DF;
+const $ = (id) => document.getElementById(id);
+UI.sources($("sources"), ["parquet-format", "parquet-encodings", "parquet-thrift", "thrift-compact"], {
+  code: ["parquet.html", "parquet-codec.js", "common.js"],
+  verified: "pyarrow reads every variant, with and without nulls, and agrees on rows, statistics, sorting columns and row group pruning.",
+});
+
+const state = { rows: [], sorted: [], file: null, columns: PQ.COLUMNS.map((c) => ({ ...c })), select: new Set(["temp_c"]), gen: 0 };
+const explorer = new UI.Explorer({ structure: $("structure"), hex: $("hex"), inspector: $("inspector"), filemap: $("fmap"), chip: $("range"), chipName: $("selname"), mapFlat: (n) => !n.label.startsWith("Row group") });
+UI.legend($("legend"), [["magic", "PAR1"], ["pagehdr", "page header (Thrift)"], ["dict", "dictionary values"], ["rle", "RLE run"], ["bitpacked", "bit-packed run"], ["value", "PLAIN values"], ["footer", "footer (Thrift)"], ["length", "footer length"], ["compressed", "compressed"]]);
+UI.themeToggle($("theme"));
+
+const hue = (ci) => UI.COL_HUES[ci % UI.COL_HUES.length];
+
+const PRESETS = [
+  ["q1", "Q1: location = 'hall-a'", { sort: "", select: ["temp_c"], where: ["location", "=", "hall-a"] }],
+  ["q1s", "Q1, sorted by location", { sort: "location", select: ["temp_c"], where: ["location", "=", "hall-a"] }],
+  ["q2", "Q2: temp_c > 40, still sorted by location", { sort: "location", select: ["temp_c"], where: ["temp_c", ">", "40"] }],
+  ["q2s", "Q2, sorted by temp_c", { sort: "temp_c", select: ["temp_c"], where: ["temp_c", ">", "40"] }],
+];
+
+const presetPills = PRESETS.map(([key, label, p]) => {
+  const b = UI.el("button", { class: "pill", type: "button" }, label);
+  b.addEventListener("click", () => {
+    presetPills.forEach(([, x]) => x.classList.toggle("on", x === b));
+    $("sort").value = p.sort;
+    state.select = new Set(p.select);
+    renderSelect();
+    $("wcol").value = p.where[0];
+    $("wop").value = p.where[1];
+    $("wval").value = p.where[2];
+    $("nowhere").checked = false;
+    rebuild();
+  });
+  $("queries").append(b);
+  return [key, b];
+});
+
+function renderSelect() {
+  $("selcols").innerHTML = "";
+  for (const [ci, c] of state.columns.entries()) {
+    const cb = UI.el("input", { type: "checkbox" });
+    cb.checked = state.select.has(c.name);
+    cb.addEventListener("change", () => {
+      if (cb.checked) state.select.add(c.name);
+      else state.select.delete(c.name);
+      runQuery();
+    });
+    const sw = UI.el("span", { class: "colsw" });
+    sw.style.setProperty("--h", hue(ci));
+    $("selcols").append(UI.el("label", {}, cb, sw, c.name));
+  }
+}
+
+function renderTranspose() {
+  const rows = state.sorted.slice(0, 5);
+  const cols = state.columns;
+  const cell = (ci, v, extra = "") => {
+    const e = UI.el("span", { class: `tp-cell ${extra}`, title: `${cols[ci].name} = ${v}` }, PQ.showValue(cols[ci], v).replace(/^"|"$/g, "").replace(/^2026-10-01T/, ""));
+    e.style.setProperty("--h", hue(ci));
+    return e;
+  };
+  $("tpRows").innerHTML = "";
+  $("tpCols").innerHTML = "";
+  rows.forEach((r) => cols.forEach((c, ci) => $("tpRows").append(cell(ci, r[c.name], ci === cols.length - 1 ? "rowsep" : ""))));
+  cols.forEach((c, ci) => rows.forEach((r, ri) => $("tpCols").append(cell(ci, r[c.name], ri === rows.length - 1 ? "rowsep" : ""))));
+  $("nrows").textContent = `first 5 of ${state.rows.length} rows`;
+}
+
+function renderColumns() {
+  const f = state.file;
+  const total = f.bytes.length;
+  const per = state.columns.map((c, ci) => {
+    const chunks = f.groups.map((g) => g.chunks[ci]);
+    const bytes = chunks.reduce((s, ch) => s + (ch.end - ch.start), 0);
+    const runs = chunks.filter((ch) => ch.runs).reduce((a, ch) => ({ rle: a.rle + ch.runs.rle, bp: a.bp + ch.runs.bp }), { rle: 0, bp: 0 });
+    const dict = chunks.filter((ch) => ch.dictSize).reduce((s, ch) => Math.max(s, ch.dictSize), 0);
+    return { c, ci, bytes, runs, dict };
+  });
+  $("cols").innerHTML = `<tr><th>Column</th><th>Type</th><th>Encoding</th><th>Bytes</th><th>Share</th><th>Detail</th></tr>`;
+  for (const p of per) {
+    const sel = UI.el("select", {}, UI.el("option", { value: "PLAIN" }, "PLAIN"), UI.el("option", { value: "DICT" }, "DICTIONARY"));
+    sel.value = p.c.encoding;
+    sel.addEventListener("change", () => {
+      state.columns[p.ci].encoding = sel.value;
+      rebuild();
+    });
+    const sw = UI.el("span", { class: "colsw" });
+    sw.style.setProperty("--h", hue(p.ci));
+    const detail = p.c.encoding === "DICT"
+      ? `${p.dict} distinct per chunk, ${p.runs.rle} RLE / ${p.runs.bp} bit-packed run(s)`
+      : `${({ INT32: 4, INT64: 8, DOUBLE: 8 })[p.c.ptype] ? `${({ INT32: 4, INT64: 8, DOUBLE: 8 })[p.c.ptype]} B per value` : "4 B length + bytes per value"}`;
+    const tr = UI.el("tr", {},
+      UI.el("td", { class: "mono", style: "white-space:nowrap" }, sw, p.c.name),
+      UI.el("td", { class: "mono small" }, p.c.converted ? `${p.c.ptype} (${p.c.converted})` : p.c.ptype),
+      UI.el("td", {}, sel),
+      UI.el("td", { class: "mono" }, DF.fmtBytes(p.bytes)),
+      UI.el("td", { class: "mono" }, `${((p.bytes / total) * 100).toFixed(1)}%`),
+      UI.el("td", { class: "small muted" }, detail));
+    $("cols").append(tr);
+  }
+  $("fsize").textContent = `${DF.fmtBytes(total)} file, ${f.groups.length} row group(s)`;
+}
+
+function parseValue(col, raw) {
+  if (col.ptype === "BYTE_ARRAY") return raw.replace(/^['"]|['"]$/g, "");
+  if (col.converted === "TIMESTAMP_MILLIS") {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+    const d = Date.parse(raw);
+    if (Number.isNaN(d)) throw new Error(`cannot parse '${raw}' as a timestamp`);
+    return d;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`'${raw}' is not a number`);
+  return n;
+}
+
+function runQuery() {
+  const f = state.file;
+  if (!f) return;
+  const select = state.columns.map((c) => c.name).filter((n) => state.select.has(n));
+  let where = null;
+  try {
+    if (!$("nowhere").checked) {
+      const col = state.columns.find((c) => c.name === $("wcol").value);
+      where = { col: col.name, op: $("wop").value, value: parseValue(col, $("wval").value) };
+    }
+    $("err").classList.add("hidden");
+  } catch (e) {
+    $("err").classList.remove("hidden");
+    $("err").textContent = e.message;
+    return;
+  }
+  const p = PQ.plan(f, state.sorted, { select, where });
+  const jsonl = state.sorted.reduce((s, r) => s + DF.utf8(JSON.stringify(r)).length + 1, 0);
+  UI.sizeBars($("qbars"), [
+    { label: "JSON lines, full scan", n: jsonl, alt: true },
+    { label: "Parquet file", n: p.total, alt: true },
+    { label: "Parquet bytes read", n: p.bytesRead },
+  ]);
+  const hint = where ? `click: show the ${where.col} statistics in the footer` : "click: show this RowGroup in the footer";
+  $("rglist").innerHTML = p.decisions.map((d) => `<button type="button" class="rg ${d.read ? "read" : "skip"}" data-rg="${d.rg}" data-col="${where ? UI.esc(where.col) : ""}" title="${UI.esc(d.reason)}\n${hint}">RG ${d.rg}: ${UI.esc(d.reason)}</button>`).join("");
+  const skipped = p.decisions.filter((d) => !d.read).length;
+  $("qnote").innerHTML = `Read ${DF.fmtBytes(p.bytesRead)} of ${DF.fmtBytes(p.total)} (${((p.bytesRead / p.total) * 100).toFixed(1)}%): the footer, then ${select.length + (where && !select.includes(where.col) ? 1 : 0)} of ${state.columns.length} columns in ${p.decisions.length - skipped} of ${p.decisions.length} row groups. ${skipped ? `${skipped} row group(s) skipped on min/max alone.` : where ? "No row group could be skipped: every min/max range overlaps the predicate. Try another sort order." : ""}`;
+  $("qcount").textContent = `${p.matched} matching row(s)${p.sample.length ? ", first " + p.sample.length + ":" : ""}`;
+  $("qsample").textContent = p.sample.map((r) => JSON.stringify(Object.fromEntries(Object.entries(r).map(([k, v]) => [k, k === "ts" ? new Date(v).toISOString() : v])))).join("\n") || "(none)";
+  explorer.filemap.overlay(p.ranges);
+  explorer.hex.setOverlay($("dimhex").checked ? p.ranges : null);
+}
+
+async function rebuild() {
+  const gen = ++state.gen;
+  const n = Number($("rows").value);
+  if (state.rows.length !== n) state.rows = PQ.makeRows(n);
+  const sortBy = $("sort").value || null;
+  state.sorted = PQ.sortRows(state.rows, sortBy);
+  const rgSize = Math.max(1, Math.round(n * Number($("rg").value)));
+  try {
+    const file = await PQ.build(state.sorted, state.columns, { rowGroupSize: rgSize, codec: $("codec").value, sortBy });
+    if (gen !== state.gen) return;
+    state.file = file;
+    explorer.load(file, true);
+    renderTranspose();
+    renderColumns();
+    runQuery();
+  } catch (e) {
+    $("err").classList.remove("hidden");
+    $("err").textContent = e.message;
+  }
+}
+
+for (const c of state.columns) $("wcol").append(UI.el("option", { value: c.name }, c.name));
+$("wcol").value = "temp_c";
+$("wval").value = "40";
+renderSelect();
+for (const id of ["rows", "sort", "rg", "codec"]) $(id).addEventListener("change", () => {
+  presetPills.forEach(([, x]) => x.classList.remove("on"));
+  rebuild();
+});
+for (const id of ["wop", "nowhere", "dimhex"]) $(id).addEventListener("change", runQuery);
+$("wval").addEventListener("input", UI.debounce(runQuery, 250));
+$("wcol").addEventListener("change", () => {
+  const defaults = { device_id: "5000", location: "hall-a", status: "fault", temp_c: "40", ts: "2026-10-01T08:30:00Z" };
+  $("wval").value = defaults[$("wcol").value];
+  $("wop").value = ["location", "status"].includes($("wcol").value) ? "=" : ">";
+  runQuery();
+});
+
+/** The footer node a planner decision was made on: RowGroup rg, or its statistics for col. */
+function footerNode(rg, col) {
+  const child = (n, test) => n?.children.find(test);
+  const named = (n, label) => child(n, (c) => c.label === label);
+  const footer = named(explorer.root, "Footer (FileMetaData)");
+  const group = child(named(footer, "row_groups"), (c) => c.label.startsWith(`[${rg}] `));
+  if (!col) return group;
+  const ci = state.columns.findIndex((c) => c.name === col);
+  const chunk = named(named(group, "columns"), `[${ci}] ${col}`);
+  return named(named(named(chunk, "meta_data"), "value"), "statistics");
+}
+
+$("rglist").addEventListener("click", (e) => {
+  const chip = e.target.closest(".rg");
+  const node = chip && footerNode(Number(chip.dataset.rg), chip.dataset.col);
+  if (!node) return;
+  explorer.select(node, true);
+  document.querySelector(".card.structure").scrollIntoView({ behavior: "smooth", block: "start" });
+});
+$("dl").addEventListener("click", () => state.file && UI.download(state.file.bytes, "readings.parquet"));
+
+rebuild();
+</script>
+</body>
+</html>

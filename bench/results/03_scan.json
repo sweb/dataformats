@@ -1,0 +1,73 @@
+{
+  "rows": 10000000,
+  "row_group_size": 100000,
+  "codec": "zstd",
+  "q1": {
+    "JSON lines, any engine (pyarrow.json)": {
+      "bytes": 1505052900,
+      "requests": "-",
+      "rows": 3997421,
+      "row_groups": "-",
+      "avg": 29.99475549632041,
+      "cpu_s": 11.030161223
+    },
+    "Parquet, read everything, filter in memory": {
+      "bytes": 113648907,
+      "requests": 6,
+      "rows": 3997421,
+      "row_groups": "all",
+      "avg": 29.99475549632041,
+      "cpu_s": 1.5235111339999996
+    },
+    "+ column pruning (time-ordered)": {
+      "bytes": 18657267,
+      "requests": 204,
+      "rows": 3997421,
+      "row_groups": "100/100",
+      "avg": 29.99475549632041,
+      "cpu_s": 0.4739462060000008
+    },
+    "+ sorted by location (row-group skipping)": {
+      "bytes": 6535445,
+      "requests": 82,
+      "rows": 3997421,
+      "row_groups": "40/100",
+      "avg": 29.99475549632041,
+      "cpu_s": 0.16159175800000014
+    },
+    "+ partitioned by location": {
+      "bytes": 6714218,
+      "requests": 45,
+      "rows": 3997421,
+      "row_groups": "40/103",
+      "avg": 29.99475549632041,
+      "cpu_s": 0.02083025900000024
+    }
+  },
+  "q2": {
+    "sorted by location": {
+      "bytes": 16107110,
+      "requests": 102,
+      "rows": 1664448,
+      "row_groups": "100/100",
+      "avg": 42.50231549520231,
+      "cpu_s": 0.07278000799999873
+    },
+    "partitioned by location": {
+      "bytes": 16324426,
+      "requests": 106,
+      "rows": 1664448,
+      "row_groups": "103/103",
+      "avg": 42.50231549520231,
+      "cpu_s": 0.07471218399999913
+    },
+    "sorted by temp_c": {
+      "bytes": 272451,
+      "requests": 21,
+      "rows": 1664448,
+      "row_groups": "17/100",
+      "avg": 42.50231549520231,
+      "cpu_s": 0.009533762000000223
+    }
+  }
+}

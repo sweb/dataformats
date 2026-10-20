@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Format Explorers</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
+.cards a.card { text-decoration: none; color: var(--text); display: block; transition: border-color 0.1s; }
+.cards a.card:hover { border-color: var(--accent); }
+.cards h2 { margin: 6px 0 4px; font-size: 1.25rem; }
+.cards .idea { font-family: var(--mono); font-size: 0.85rem; color: var(--accent); margin-bottom: 8px; }
+.cards ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <h1>Data Format Explorers</h1>
+      <p class="sub">One sensor reading, six formats, every byte clickable</p>
+    </div>
+    <button class="icon" id="theme" title="Toggle light / dark">&#9681;</button>
+  </header>
+  <div class="cards">
+    <a class="card" href="protobuf.html">
+      <span class="chip muted">01</span>
+      <h2>Protocol Buffers</h2>
+      <div class="idea">a field is a number</div>
+      <div>Tags and varints. Field numbers on the wire, names only in the .proto.</div>
+      <ul>
+        <li>tag = (field_number &lt;&lt; 3) | wire_type, bit by bit</li>
+        <li>reader schema: rename free, renumber or type change silent</li>
+        <li>500 readings: delimited stream vs one big message</li>
+      </ul>
+    </a>
+    <a class="card" href="avro.html">
+      <span class="chip muted">02</span>
+      <h2>Apache Avro</h2>
+      <div class="idea">a field is a name, the schema ships with the data</div>
+      <div>No tags at all. Container file, single-object and Kafka framing side by side.</div>
+      <ul>
+        <li>schema JSON readable in the hex dump</li>
+        <li>sync markers: start at byte N, resync, decode</li>
+        <li>resolution: reorder ok, rename BREAKS, alias fixes it</li>
+      </ul>
+    </a>
+    <a class="card" href="parquet.html">
+      <span class="chip muted">03</span>
+      <h2>Apache Parquet</h2>
+      <div class="idea">transpose, encode, describe yourself, skip</div>
+      <div>A real Parquet file written in the browser: row groups, pages, dictionary, RLE, Thrift footer.</div>
+      <ul>
+        <li>dictionary + RLE / bit-packing vs sort order</li>
+        <li>min/max statistics in the footer</li>
+        <li>query planner: bytes read vs bytes in the file</li>
+      </ul>
+    </a>
+    <a class="card" href="iceberg.html">
+      <span class="chip muted">04</span>
+      <h2>Apache Iceberg</h2>
+      <div class="idea">a table is files about files</div>
+      <div>A real table written in the browser: JSON metadata, Avro manifests, Parquet data files with field ids.</div>
+      <ul>
+        <li>which format holds what, and why Avro is not where your rows are</li>
+        <li>rename, add, drop, widen: metadata only, matched by field id</li>
+        <li>a commit per minute: metadata outgrows the data</li>
+      </ul>
+    </a>
+    <a class="card" href="arrow.html">
+      <span class="chip muted">05</span>
+      <h2>Apache Arrow</h2>
+      <div class="idea">same columns, opposite goal: cycles, not bytes</div>
+      <div>Validity bitmaps, offsets and values at computed addresses. A real IPC file, FlatBuffers metadata included.</div>
+      <ul>
+        <li>read row i: a handful of loads, nulls cost full width</li>
+        <li>slices are (offset, length), 0 bytes copied</li>
+        <li>the file body is the memory layout, measured load times from bench/06</li>
+      </ul>
+    </a>
+    <a class="card" href="lance.html">
+      <span class="chip muted">06</span>
+      <h2>Lance</h2>
+      <div class="idea">rows by id: the unit you decode is the price</div>
+      <div>Random lookups replayed on the real 10M-row files from bench/05.</div>
+      <ul>
+        <li>Parquet row group vs Lance mini-block chunk</li>
+        <li>1000 rows: the Parquet file read ten times over</li>
+        <li>field ids: the number camp, and the size it costs</li>
+      </ul>
+    </a>
+  </div>
+  <p class="note" id="about" style="margin-top:18px"></p>
+</div>
+<script src="common.js"></script>
+<script src="sources.js"></script>
+<script src="ui.js"></script>
+<script>
+"use strict";
+const { UI } = DF;
+UI.themeToggle(document.getElementById("theme"));
+document.getElementById("about").innerHTML = `Everything runs locally from these files, no network needed. Every page lists the specifications it follows at the bottom. ` +
+  `The bytes the pages write are checked against fastavro, pyarrow, pyiceberg, protoc and the protobuf library by ${UI.repoLink(DF.SRC.VERIFY.check, "verify/check.py")}. ` +
+  `Measured numbers on the Arrow and Lance pages come from ${UI.repoLink("bench/README.md", "bench/")}, run on 10M rows of synthetic sensor data; each page says which script produced them. ` +
+  `Source: <a href="${UI.esc(DF.SRC.REPO)}" target="_blank" rel="noopener">${UI.esc(DF.SRC.REPO.replace(/^https:\/\//, ""))}</a>.`;
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "rows": 10000000,
+  "iceberg": {
+    "create table + append all rows": {
+      "seconds": 1.1471452090190724,
+      "data_bytes_written": 82416749,
+      "metadata_bytes_written": 9507
+    },
+    "add column humidity (no default)": {
+      "seconds": 0.005774315039161593,
+      "data_bytes_written": 0,
+      "metadata_bytes_written": 2639
+    },
+    "rename temp_c -> temperature_c": {
+      "seconds": 0.005146392970345914,
+      "data_bytes_written": 0,
+      "metadata_bytes_written": 3348
+    },
+    "widen device_id int -> long": {
+      "seconds": 0.005576820985879749,
+      "data_bytes_written": 0,
+      "metadata_bytes_written": 4058
+    },
+    "drop firmware_version": {
+      "seconds": 0.005897178023587912,
+      "data_bytes_written": 0,
+      "metadata_bytes_written": 4700
+    },
+    "reorder: status first": {
+      "seconds": 0.006332475983072072,
+      "data_bytes_written": 0,
+      "metadata_bytes_written": 5342
+    },
+    "append 1000 rows under new schema": {
+      "seconds": 0.017694972979370505,
+      "data_bytes_written": 14519,
+      "metadata_bytes_written": 12793
+    }
+  },
+  "parquet_rewrite": {
+    "seconds": 1.0804679890279658,
+    "data_bytes_written": 79080306,
+    "metadata_bytes_written": 0
+  }
+}

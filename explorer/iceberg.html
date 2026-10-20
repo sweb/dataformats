@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iceberg Table Explorer</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  :root {
+    --c-data: #2a78d6;
+    --c-meta: #eb6834;
+    --c-list: #1baf7a;
+    --c-manifest: #eda100;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --c-data: #3987e5;
+      --c-meta: #d95926;
+      --c-list: #199e70;
+      --c-manifest: #c98500;
+    }
+  }
+  :root[data-theme="dark"] {
+    --c-data: #3987e5;
+    --c-meta: #d95926;
+    --c-list: #199e70;
+    --c-manifest: #c98500;
+  }
+  .layers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 980px) { .layers { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  .layer-h { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .layer-h b { font-size: 0.92rem; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--c); flex: none; }
+  .lfile { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 5px 8px; margin: 0 0 4px; border: 1px solid var(--border); border-left: 4px solid var(--c); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; font-size: 0.8rem; cursor: pointer; }
+  .lfile .nm { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .lfile .sz { font-family: var(--mono); color: var(--muted); flex: none; }
+  .lfile.hist { opacity: 0.6; }
+  .lfile.sel { outline: 2px solid var(--accent); outline-offset: 1px; opacity: 1; }
+  .lfile .tag { font-size: 0.7rem; padding: 0 5px; border-radius: 4px; background: var(--accent-soft); color: var(--text); flex: none; }
+  .more { font-size: 0.78rem; color: var(--muted); padding: 2px 8px; }
+  .kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+  @media (max-width: 700px) { .kpis { grid-template-columns: minmax(0, 1fr); } }
+  .kpi { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+  .kpi .lbl { font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .chart-wrap { position: relative; }
+  .chart-wrap svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart-wrap .grid-line { stroke: var(--border); stroke-width: 1; }
+  .chart-wrap .axis-text { fill: var(--muted); font-size: 11px; font-family: var(--sans); }
+  .chart-wrap .end-label { fill: var(--text); font-size: 11.5px; font-family: var(--sans); }
+  .chart-wrap .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 0.8rem; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12); min-width: 190px; z-index: 5; }
+  .tip .row { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+  .tip .row span:first-child { display: flex; align-items: center; gap: 6px; }
+  .legend-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.85rem; margin: 4px 0 6px; }
+  .legend-row span { display: flex; align-items: center; gap: 6px; }
+  td.silent { background: var(--warn-soft); }
+  td.nul { color: var(--muted); }
+  tr.added td { background: var(--ok-soft); }
+  tr.changed td { background: var(--accent-soft); }
+  .range { width: 100%; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <div class="nav"><a href="index.html">Explorers</a><a href="protobuf.html">Protobuf</a><a href="avro.html">Avro</a><a href="parquet.html">Parquet</a><a class="cur" href="iceberg.html">Iceberg</a><a href="arrow.html">Arrow</a><a href="lance.html">Lance</a></div>
+      <h1>Apache Iceberg Table Format</h1>
+      <p class="sub">JSON, Avro and Parquet in one table, and what each of them is for</p>
+    </div>
+    <div class="right-tools">
+      <button class="icon" id="theme" title="Toggle light / dark">&#9681;</button>
+    </div>
+  </header>
+
+  <section class="card" style="margin-bottom:14px">
+    <div class="card-h">
+      <h3><span class="step">1</span>The table on storage<sup data-cite="iceberg-spec"></sup></h3>
+      <div class="controls">
+        <label class="ctl">rows per commit <select id="rows"><option>5</option><option selected>100</option><option>1000</option></select></label>
+        <button class="btn small" id="commit">Commit: append rows</button>
+        <button class="btn small" id="reset">Reset</button>
+      </div>
+    </div>
+    <div class="layers" id="layers"></div>
+    <div class="grid g2" style="margin:12px 0 0">
+      <div><div id="sizes"></div></div>
+      <div>
+        <p class="note" style="margin-top:0">A reader starts at the newest metadata.json, follows the current snapshot to its manifest list, the manifest list to the manifests, the manifests to the data files. Your rows exist only in Parquet. Avro holds the bookkeeping: which files belong to the table, their row counts, per-column min/max. JSON holds the table itself: schemas, snapshots, the pointer to the current manifest list.</p>
+        <p class="note">Iceberg's schema evolution does not come from Avro. It comes from field ids (step 3), and works the same whether the data files are Parquet, ORC or Avro.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card structure" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">2</span>File structure</h3><span class="chip" id="fileChip"></span><button class="btn small" id="dl">Download</button></div>
+    <div id="structure"></div>
+  </section>
+
+  <section class="grid g-hex">
+    <div class="card">
+      <div class="card-h"><h3>Binary stream view</h3><span class="chip" id="range"></span></div>
+      <div id="hex"></div>
+      <div class="legend" id="legend"></div>
+      <p class="note">Click a file in step 1, then a byte. In a manifest, the ASCII column shows three schemas: Avro's own, the table schema and the partition spec. Further down, each data file's lower_bounds and upper_bounds: per-column min/max, keyed by field id. Manifests in this table are written uncompressed so you can read them; the growth model in step 4 is calibrated on deflate-compressed ones. In a data file, the footer carries a field_id per column.<sup data-cite="parquet-thrift"></sup></p>
+    </div>
+    <div class="card insp">
+      <div class="card-h"><h3>Field inspector</h3><span class="chip" id="selname"></span></div>
+      <div id="inspector"></div>
+    </div>
+  </section>
+
+  <section class="grid g2">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">3</span>Change the schema<sup data-cite="iceberg-spec"></sup></h3><span class="chip muted" id="schemaChip"></span></div>
+      <div class="pills" id="ops" style="margin-bottom:10px"></div>
+      <table class="t" id="schemaTable"></table>
+      <div id="opNote" class="callout hidden"></div>
+      <p class="note">Every change is a new metadata.json and nothing else. Commit again afterwards to write a file with the new schema.</p>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>What a reader sees</h3><div id="readTabs"></div></div>
+      <div style="overflow-x:auto"><table class="t" id="readTable"></table></div>
+      <p class="note" id="readNote"></p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h3><span class="step">4</span>Commit every minute, never clean up</h3><div class="pills" id="presets"></div></div>
+    <div class="controls" style="margin-bottom:6px">
+      <label class="ctl" style="flex:1;min-width:220px">commits <input type="range" class="range" id="ncommits" min="0" max="1000" value="790"></label>
+      <span class="mono" id="nlabel"></span>
+      <label class="ctl">rows per commit <select id="growRows"><option>10</option><option selected>100</option><option>1000</option><option>10000</option></select></label>
+    </div>
+    <div class="controls" style="margin-bottom:6px">
+      <label class="ctl"><input type="checkbox" id="merge"> merge manifests <span class="mono small">commit.manifest-merge.enabled</span> <span class="small muted">default: on in Iceberg Java<sup data-cite="iceberg-java-defaults"></sup>, off in PyIceberg<sup data-cite="pyiceberg-defaults"></sup></span></label>
+      <label class="ctl"><input type="checkbox" id="delmeta"> delete old metadata files <span class="mono small">write.metadata.delete-after-commit.enabled</span> <span class="small muted">default: off<sup data-cite="iceberg-config"></sup></span></label>
+    </div>
+    <div class="kpis" id="kpis"></div>
+    <div class="legend-row" id="chartLegend"></div>
+    <div class="chart-wrap" id="chart"></div>
+    <div style="overflow-x:auto;margin-top:10px"><table class="t" id="growTable"></table></div>
+    <p class="note" id="growNote"></p>
+  </section>
+
+  <section class="card sources" id="sources"></section>
+</div>
+
+<script src="common.js"></script>
+<script src="sources.js"></script>
+<script src="avro-codec.js"></script>
+<script src="parquet-codec.js"></script>
+<script src="iceberg-model.js"></script>
+<script src="ui.js"></script>
+<script>
+"use strict";
+const { IB, UI } = DF;
+const $ = (id) => document.getElementById(id);
+const fmtB = (v) => DF.fmtBytes(Math.round(v));
+const cite = UI.sources($("sources"), ["iceberg-spec", "parquet-thrift", "iceberg-config", "iceberg-java-defaults", "pyiceberg-defaults", "iceberg-maintenance", "avro-java-sync"], {
+  code: ["iceberg.html", "iceberg-model.js", "avro-codec.js", "parquet-codec.js", "common.js"],
+  verified: "pyiceberg opens the table, reads every row through the manifests after a rename, add, widen and drop, time travels to an earlier snapshot, and reads the same manifest bounds its own serializer writes. The growth model is compared with 150 real commits.",
+});
+
+const KINDS = [
+  { key: "metadata", label: "metadata.json", format: "JSON", color: "var(--c-meta)" },
+  { key: "list", label: "manifest lists", format: "Avro", color: "var(--c-list)" },
+  { key: "manifest", label: "manifests", format: "Avro", color: "var(--c-manifest)" },
+  { key: "data", label: "data files", format: "Parquet", color: "var(--c-data)" },
+];
+const kindOf = (k) => KINDS.find((x) => x.key === k);
+
+const explorer = new UI.Explorer({ structure: $("structure"), hex: $("hex"), inspector: $("inspector"), chip: $("range"), chipName: $("selname") });
+UI.legend($("legend"), [["magic", "magic / JSON delimiters"], ["meta", "metadata"], ["schema", "schema"], ["sync", "sync marker"], ["count", "count / snapshots"], ["length", "length / size"], ["value", "value"], ["compressed", "compressed block"]]);
+UI.themeToggle($("theme"));
+
+const state = { t: null, selected: null, readMode: "id", prevSchema: null, busy: false };
+
+async function reset() {
+  state.t = IB.create({ manifestCodec: "null" });
+  state.prevSchema = null;
+  for (let i = 0; i < 3; i++) await IB.append(state.t, IB.readings(state.t, Number($("rows").value)));
+  state.selected = null;
+  $("opNote").classList.add("hidden");
+  refresh();
+}
+
+function currentChain(t) {
+  const meta = t.files.filter((f) => f.kind === "metadata").pop();
+  const snap = IB.currentSnapshot(t);
+  const list = snap ? t.files.find((f) => f.kind === "list" && f.path === snap["manifest-list"]) : null;
+  const manifests = new Set(t.manifests.map((m) => m.manifest_path));
+  return { meta, list, manifests };
+}
+
+function renderLayers() {
+  const t = state.t;
+  const chain = currentChain(t);
+  const MAX = 6;
+  $("layers").innerHTML = "";
+  for (const k of KINDS) {
+    const files = t.files.filter((f) => f.kind === k.key).slice().reverse();
+    const total = files.reduce((s, f) => s + f.bytes.length, 0);
+    const col = UI.el("div", { class: "layer" });
+    col.style.setProperty("--c", k.color);
+    col.innerHTML = `<div class="layer-h"><span class="sw"></span><b>${k.label}</b><span class="chip muted">${k.format}</span><span class="small muted">${files.length} file(s), ${fmtB(total)}</span></div>`;
+    for (const f of files.slice(0, MAX)) {
+      const isCur = f === chain.meta || f === chain.list || (k.key === "manifest" && chain.manifests.has(f.path)) || k.key === "data";
+      const tag = f === chain.meta ? "current" : f === chain.list ? "current snapshot" : "";
+      const b = UI.el("button", { class: `lfile${isCur ? "" : " hist"}${state.selected === f ? " sel" : ""}`, type: "button", title: f.path });
+      b.style.setProperty("--c", k.color);
+      b.innerHTML = `<span class="nm">${UI.esc(f.name)}</span>${tag ? `<span class="tag">${tag}</span>` : ""}<span class="sz">${fmtB(f.bytes.length)}</span>`;
+      b.addEventListener("click", () => selectFile(f));
+      col.append(b);
+    }
+    if (files.length > MAX) col.append(UI.el("div", { class: "more" }, `+ ${files.length - MAX} older`));
+    $("layers").append(col);
+  }
+  const tot = IB.totals(t);
+  const max = Math.max(...KINDS.map((k) => tot[k.key].bytes), 1);
+  $("sizes").innerHTML = `<div class="sizebars">${KINDS.map((k) => `<div class="sizebar"><span>${k.label} <span class="small muted">${k.format}</span></span><div class="bar"><div style="width:${(tot[k.key].bytes / max) * 100}%;background:${k.color}"></div></div><span class="n">${fmtB(tot[k.key].bytes)}</span></div>`).join("")}</div>`;
+}
+
+function selectFile(f) {
+  state.selected = f;
+  explorer.load(f.built, false);
+  $("fileChip").textContent = `${f.format}: ${f.name}`;
+  renderLayers();
+}
+
+function refresh() {
+  renderLayers();
+  if (!state.selected || !state.t.files.includes(state.selected)) {
+    selectFile(state.t.files.filter((f) => f.kind === "manifest").pop());
+  }
+  renderSchema();
+  renderRead();
+}
+
+function fieldByName(t, name) {
+  return IB.schemaOf(t).fields.find((f) => f.name === name);
+}
+
+function freeName(t, base) {
+  let name = base;
+  for (let i = 2; fieldByName(t, name); i++) name = `${base}_${i}`;
+  return name;
+}
+
+const OPS = [
+  ["add", "Add a column", (t) => {
+    const name = freeName(t, "firmware");
+    const r = IB.evolve(t, { kind: "add", name, type: "string" });
+    const id = t.lastColumnId;
+    return [r, "ok", `Added <code>${name}</code> with the new id ${id}. No data file was touched. Files written before have no column with id ${id}, so a reader returns null for them.`];
+  }],
+  ["rename", "Rename location to site", (t) => {
+    const f = IB.schemaOf(t).fields.find((x) => x.id === 2);
+    if (!f) return [{ ok: false, reason: "field id 2 was dropped. Reset to try this again" }];
+    const name = f.name === "site" ? "location" : "site";
+    const r = IB.evolve(t, { kind: "rename", id: 2, name });
+    return [r, "ok", `Renamed id 2 from <code>${f.name === "site" ? "site" : "location"}</code> to <code>${name}</code>. Only metadata.json changed. The old Parquet footers still say the old name, and it does not matter: the reader asks for field_id 2. Switch the reader to "by name" to see what happens without ids.`];
+  }],
+  ["drop", "Drop temp_c", (t) => {
+    const f = fieldByName(t, "temp_c");
+    if (!f) return [{ ok: false, reason: "there is no temp_c any more" }];
+    const r = IB.evolve(t, { kind: "drop", id: f.id });
+    return [r, "ok", `Dropped <code>temp_c</code> (id ${f.id}). Its bytes stay in the old files until they are rewritten, readers just never ask for id ${f.id} again. A new column called temp_c would get a new id and would not see the old values.`];
+  }],
+  ["widen", "Widen device_id to long", (t) => {
+    const f = IB.schemaOf(t).fields.find((x) => x.id === 1);
+    if (f.type === "long") return [{ ok: false, reason: "device_id is already a long" }];
+    const r = IB.evolve(t, { kind: "retype", id: 1, type: "long" });
+    return [r, "ok", "device_id is now a long. Old files still store INT32, readers widen on read. Allowed promotions: int to long, float to double, decimal to a higher precision."];
+  }],
+  ["retype", "Change location to int", (t) => {
+    const f = IB.schemaOf(t).fields.find((x) => x.id === 2);
+    if (!f) return [{ ok: false, reason: "field id 2 was dropped. Reset to try this again" }];
+    const r = IB.evolve(t, { kind: "retype", id: 2, type: "int" });
+    return [r, "bad", ""];
+  }],
+  ["upstream", "Source renamed location to site", (t) => {
+    const f = fieldByName(t, "location");
+    if (!f) return [{ ok: false, reason: "there is no column called location. Reset to try this again" }];
+    IB.evolve(t, { kind: "drop", id: f.id });
+    const name = freeName(t, "site");
+    const r = IB.evolve(t, { kind: "add", name, type: "string" });
+    return [r, "warn", `The source system renamed the field. The pipeline sees <code>location</code> disappear and <code>${name}</code> appear, so it drops one and adds the other. <code>${name}</code> gets the new id ${t.lastColumnId}, and nothing connects it to id ${f.id}: every old row reads <b>null</b>. Field ids protect renames made with ALTER TABLE, not renames that happen upstream.`];
+  }],
+];
+
+for (const [key, label, fn] of OPS) {
+  const b = UI.el("button", { class: "pill", type: "button" }, label);
+  b.addEventListener("click", () => {
+    const t = state.t;
+    const before = IB.schemaOf(t);
+    const metaBefore = t.files.filter((f) => f.kind === "metadata").length;
+    const [r, cls, msg] = fn(t);
+    const note = $("opNote");
+    note.classList.remove("hidden");
+    if (!r.ok) {
+      note.className = "callout bad";
+      note.innerHTML = `<b>Rejected:</b> ${UI.esc(r.reason)}.${key === "retype" ? " A change that loses information needs a new column and a backfill. That is a decision for you, not a feature of the format." : ""}`;
+      return;
+    }
+    state.prevSchema = before;
+    const newMeta = t.files.filter((f) => f.kind === "metadata").slice(metaBefore);
+    const metaBytes = newMeta.reduce((s, f) => s + f.bytes.length, 0);
+    note.className = `callout ${cls}`;
+    note.innerHTML = `${msg}<br><span class="small">Data bytes rewritten: <b>0</b>. Written: ${newMeta.length} metadata.json, ${fmtB(metaBytes)}.</span>`;
+    state.selected = newMeta[newMeta.length - 1];
+    refresh();
+    selectFile(state.selected);
+  });
+  $("ops").append(b);
+}
+
+function renderSchema() {
+  const t = state.t;
+  const s = IB.schemaOf(t);
+  const prev = state.prevSchema;
+  $("schemaChip").textContent = `schema-id ${s.schemaId}, last-column-id ${t.lastColumnId}`;
+  const rows = s.fields.map((f) => {
+    const old = prev?.fields.find((x) => x.id === f.id);
+    const cls = prev && !old ? "added" : old && (old.name !== f.name || old.type !== f.type) ? "changed" : "";
+    return `<tr class="${cls}"><td class="mono">${f.id}</td><td class="mono">${UI.esc(f.name)}</td><td class="mono">${f.type}</td><td>${f.required ? "required" : "optional"}</td></tr>`;
+  });
+  const dropped = prev ? prev.fields.filter((f) => !s.fields.some((x) => x.id === f.id)) : [];
+  $("schemaTable").innerHTML = `<tr><th>field id</th><th>name</th><th>type</th><th></th></tr>` + rows.join("") +
+    dropped.map((f) => `<tr><td class="mono muted">${f.id}</td><td class="mono muted"><s>${UI.esc(f.name)}</s></td><td class="muted">dropped</td><td></td></tr>`).join("");
+}
+
+UI.tabs($("readTabs"), [["id", "Iceberg: by field id"], ["name", "plain Parquet: by name"]], (m) => {
+  state.readMode = m;
+  renderRead();
+}, "id");
+
+function cell(v) {
+  if (v === null || v === undefined) return { html: "null", cls: "nul" };
+  return { html: UI.esc(String(v)), cls: "" };
+}
+
+function renderRead() {
+  const t = state.t;
+  const byId = IB.scan(t);
+  const byName = IB.scan(t, { byName: true });
+  const shown = state.readMode === "id" ? byId : byName;
+  const files = t.dataFiles;
+  const firstIdx = Math.max(0, files.length - 5);
+  let silent = 0;
+  const body = [];
+  shown.rows.forEach((r, i) => {
+    if (r.file < firstIdx) return;
+    const fileRows = shown.rows.filter((x) => x.file === r.file);
+    if (fileRows.indexOf(r) >= 2) return;
+    const tds = r.values.map((v, j) => {
+      const c = cell(v);
+      const lost = state.readMode === "name" && v === null && byId.rows[i].values[j] !== null;
+      if (lost) silent++;
+      return `<td class="mono ${c.cls}${lost ? " silent" : ""}">${c.html}</td>`;
+    });
+    body.push(`<tr><td class="small muted">file ${r.file + 1}, schema ${files[r.file].schemaId}</td>${tds.join("")}</tr>`);
+  });
+  $("readTable").innerHTML = `<tr><th></th>${shown.fields.map((f) => `<th class="mono">${UI.esc(f.name)}</th>`).join("")}</tr>` + body.join("");
+  const allLost = byName.rows.reduce((s, r, i) => s + r.values.filter((v, j) => v === null && byId.rows[i].values[j] !== null).length, 0);
+  $("readNote").innerHTML = state.readMode === "id"
+    ? `The current schema, applied to every file by field id. ${files.length} data file(s), first two rows of the last ${Math.min(5, files.length)}. Columns a file does not have read as null.`
+    : allLost
+      ? `<b>${allLost} value(s) silently null</b> across all files: the old files hold them under a name the current schema no longer uses. No error, no warning.`
+      : "Matching by name gives the same result here. Rename a column to see the difference.";
+}
+
+$("commit").addEventListener("click", async () => {
+  if (state.busy) return;
+  state.busy = true;
+  await IB.append(state.t, IB.readings(state.t, Number($("rows").value)));
+  state.busy = false;
+  state.selected = state.t.files.filter((f) => f.kind === "metadata").pop();
+  refresh();
+  selectFile(state.selected);
+});
+$("reset").addEventListener("click", reset);
+$("dl").addEventListener("click", () => state.selected && UI.download(state.selected.bytes, state.selected.name));
+
+const MAX_COMMITS = 10080;
+const grow = { cal: new Map(), series: null, n: 1440 };
+
+function commitsFromSlider() {
+  const v = Number($("ncommits").value) / 1000;
+  return Math.max(1, Math.round(Math.pow(MAX_COMMITS, v)));
+}
+
+function sliderFor(n) {
+  return Math.round((Math.log(n) / Math.log(MAX_COMMITS)) * 1000);
+}
+
+function duration(n) {
+  if (n < 120) return `${n} min`;
+  if (n < 2880) return `${(n / 60).toFixed(n < 600 ? 1 : 0)} h`;
+  return `${(n / 1440).toFixed(1)} days`;
+}
+
+const PRESETS = [["1 hour", 60], ["1 day", 1440], ["1 week", 10080]];
+const presetPills = PRESETS.map(([label, n]) => {
+  const b = UI.el("button", { class: "pill", type: "button" }, label);
+  b.addEventListener("click", () => {
+    grow.n = n;
+    $("ncommits").value = sliderFor(n);
+    updateGrowth();
+  });
+  $("presets").append(b);
+  return [n, b];
+});
+
+async function calibration(rows) {
+  if (!grow.cal.has(rows)) grow.cal.set(rows, await IB.calibrate({ rowsPerCommit: rows, maxCommits: MAX_COMMITS }));
+  return grow.cal.get(rows);
+}
+
+let growGen = 0;
+async function updateGrowth() {
+  const gen = ++growGen;
+  const n = grow.n;
+  const rows = Number($("growRows").value);
+  $("nlabel").textContent = `${n.toLocaleString("en")} commits, ${duration(n)} at one per minute`;
+  presetPills.forEach(([p, b]) => b.classList.toggle("on", p === n));
+  const cal = await calibration(rows);
+  if (gen !== growGen) return;
+  const series = IB.growth(cal, { commits: n, merge: $("merge").checked, deleteAfterCommit: $("delmeta").checked });
+  const after = await IB.maintained(cal, rows * n);
+  if (gen !== growGen) return;
+  grow.series = series;
+  const last = series[series.length - 1];
+  const meta = last.metadata + last.list + last.manifest;
+  const metaFiles = last.files.metadata + last.files.list + last.files.manifest;
+  $("kpis").innerHTML = [
+    ["Data, in Parquet", fmtB(last.data), `${last.files.data.toLocaleString("en")} files, ${(rows * n).toLocaleString("en")} rows`, "var(--c-data)"],
+    ["Metadata, JSON and Avro", fmtB(meta), `${metaFiles.toLocaleString("en")} files`, "var(--c-meta)"],
+    ["Metadata per byte of data", `${(meta / last.data).toFixed(meta / last.data < 10 ? 1 : 0)}x`, "", ""],
+  ].map(([lbl, v, sub, c]) => `<div class="kpi"><div class="lbl">${c ? `<span class="sw" style="--c:${c}"></span>` : ""}${lbl}</div><div class="big-num">${v}</div><div class="small muted">${sub}</div></div>`).join("");
+  const order = ["metadata", "list", "manifest", "data"];
+  $("growTable").innerHTML = `<tr><th>after ${n.toLocaleString("en")} commits</th><th>files</th><th>bytes on storage</th><th>share</th></tr>` +
+    order.map((k) => {
+      const total = last.data + meta;
+      return `<tr><td><span class="sw" style="--c:${kindOf(k).color}"></span> ${kindOf(k).label} <span class="small muted">${kindOf(k).format}</span></td><td class="mono">${last.files[k].toLocaleString("en")}</td><td class="mono">${fmtB(last[k])}</td><td class="mono">${((last[k] / total) * 100).toFixed(1)}%</td></tr>`;
+    }).join("") +
+    `<tr><td class="muted">after rewrite_data_files, expire_snapshots, removing old metadata${cite("iceberg-maintenance")}</td><td class="mono muted">4</td><td class="mono muted">${fmtB(after.data)} data, ${fmtB(after.metadata)} metadata</td><td></td></tr>`;
+  $("growNote").innerHTML = `One data file of ${rows.toLocaleString("en")} rows per commit, each commit a new metadata.json, manifest list and manifest. metadata.json lists every snapshot, so each version is bigger than the last, and by default every old version stays on storage: the total grows with the square of the commit count. ` +
+    `${$("merge").checked
+      ? `With manifest merging, every 100th commit rewrites one manifest listing all files, which keeps the manifest lists short. That is the Java library's default: merge once commit.manifest.min-count-to-merge (100) manifests are listed${cite("iceberg-java-defaults")}. `
+      : `Without manifest merging, PyIceberg's default${cite("pyiceberg-defaults")}, each manifest list lists every manifest so far. The Java library merges by default. `}` +
+    `Nothing expires on its own: snapshots need expire_snapshots, small files rewrite_data_files${cite("iceberg-maintenance")}. ` +
+    `<span class="muted">Sizes come from files this page writes, measured at a few sizes and interpolated. Manifests and manifest lists are deflate-compressed Avro in blocks of up to 64,000 bytes, the Java default sync interval${cite("avro-java-sync")}. Parquet uses gzip instead of zstd, Iceberg Java's default since 1.4.0${cite("iceberg-java-defaults")}, because browsers have no zstd. The verify script compares the model with 150 real commits written by this page's code, with and without merging: within about 1%, and the check fails above 3%.</span>`;
+  drawChart();
+}
+
+const SERIES = [
+  { key: "metadata", label: "metadata.json", color: "var(--c-meta)" },
+  { key: "list", label: "manifest lists", color: "var(--c-list)" },
+  { key: "manifest", label: "manifests", color: "var(--c-manifest)" },
+  { key: "data", label: "data files", color: "var(--c-data)" },
+];
+$("chartLegend").innerHTML = SERIES.map((s) => `<span><span class="sw" style="--c:${s.color}"></span>${s.label}</span>`).join("");
+
+function niceStep(max, ticks) {
+  const raw = max / ticks;
+  const mag = Math.pow(2, Math.floor(Math.log2(raw)));
+  for (const m of [1, 2, 4, 8]) if (mag * m >= raw) return mag * m;
+  return mag * 8;
+}
+
+function drawChart() {
+  const series = grow.series;
+  const box = $("chart");
+  const W = Math.max(320, box.clientWidth);
+  const H = 300;
+  const m = { l: 68, r: 150, t: 10, b: 34 };
+  const n = series[series.length - 1].n;
+  const ymax = Math.max(...SERIES.map((s) => series[series.length - 1][s.key]), 1);
+  const ystep = niceStep(ymax, 5);
+  const ytop = Math.ceil(ymax / ystep) * ystep;
+  const x = (v) => m.l + (v / Math.max(1, n)) * (W - m.l - m.r);
+  const y = (v) => H - m.b - (v / ytop) * (H - m.t - m.b);
+  const parts = [];
+  for (let v = 0; v <= ytop + 1e-9; v += ystep) {
+    parts.push(`<line class="grid-line" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>`);
+    parts.push(`<text class="axis-text" x="${m.l - 8}" y="${y(v) + 4}" text-anchor="end">${v ? fmtB(v) : "0"}</text>`);
+  }
+  const xstep = niceDecimal(n / 5);
+  for (let v = 0; v <= n; v += xstep) parts.push(`<text class="axis-text" x="${x(v)}" y="${H - m.b + 16}" text-anchor="middle">${v.toLocaleString("en")}</text>`);
+  parts.push(`<text class="axis-text" x="${(m.l + W - m.r) / 2}" y="${H - 2}" text-anchor="middle">commits</text>`);
+  for (const s of SERIES) {
+    const d = series.map((p, i) => `${i ? "L" : "M"}${x(p.n).toFixed(1)},${y(p[s.key]).toFixed(1)}`).join("");
+    parts.push(`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`);
+  }
+  const last = series[series.length - 1];
+  const labels = SERIES.map((s) => ({ s, y: y(last[s.key]) })).sort((a, b) => a.y - b.y);
+  for (let i = 1; i < labels.length; i++) labels[i].y = Math.max(labels[i].y, labels[i - 1].y + 15);
+  for (let i = labels.length - 2; i >= 0; i--) labels[i].y = Math.min(labels[i].y, labels[i + 1].y - 15);
+  for (const l of labels) {
+    parts.push(`<line x1="${W - m.r + 6}" x2="${W - m.r + 16}" y1="${l.y}" y2="${l.y}" stroke="${l.s.color}" stroke-width="2" stroke-linecap="round"/>`);
+    parts.push(`<text class="end-label" x="${W - m.r + 20}" y="${l.y + 4}">${l.s.label} ${fmtB(last[l.s.key])}</text>`);
+  }
+  parts.push(`<g id="hoverLayer"></g><rect id="hit" x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/>`);
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative bytes on storage per file kind over ${n} commits">${parts.join("")}</svg><div class="tip hidden" id="tip"></div>`;
+  const hit = box.querySelector("#hit");
+  const layer = box.querySelector("#hoverLayer");
+  const tip = box.querySelector("#tip");
+  const svg = box.querySelector("svg");
+  hit.addEventListener("mousemove", (ev) => {
+    const rect = svg.getBoundingClientRect();
+    const px = ((ev.clientX - rect.left) / rect.width) * W;
+    const target = ((px - m.l) / (W - m.l - m.r)) * n;
+    let p = series[0];
+    for (const q of series) if (Math.abs(q.n - target) < Math.abs(p.n - target)) p = q;
+    layer.innerHTML = `<line class="cross" x1="${x(p.n)}" x2="${x(p.n)}" y1="${m.t}" y2="${H - m.b}"/>` +
+      SERIES.map((s) => `<circle cx="${x(p.n)}" cy="${y(p[s.key])}" r="4" fill="${s.color}" stroke="var(--panel)" stroke-width="2"/>`).join("");
+    tip.classList.remove("hidden");
+    tip.innerHTML = `<div class="small muted" style="margin-bottom:4px">${p.n.toLocaleString("en")} commits, ${duration(Math.max(1, p.n))}</div>` +
+      SERIES.map((s) => `<div class="row"><span><span class="sw" style="--c:${s.color}"></span>${s.label}</span><span class="mono">${fmtB(p[s.key])}</span></div>`).join("");
+    const left = (x(p.n) / W) * rect.width;
+    tip.style.left = `${Math.min(left + 12, rect.width - tip.offsetWidth - 4)}px`;
+    tip.style.top = "12px";
+  });
+  hit.addEventListener("mouseleave", () => {
+    layer.innerHTML = "";
+    tip.classList.add("hidden");
+  });
+}
+
+function niceDecimal(raw) {
+  const mag = Math.pow(10, Math.floor(Math.log10(Math.max(1, raw))));
+  for (const m of [1, 2, 5, 10]) if (mag * m >= raw) return Math.max(1, mag * m);
+  return mag * 10;
+}
+
+$("ncommits").addEventListener("input", UI.debounce(() => {
+  grow.n = commitsFromSlider();
+  updateGrowth();
+}, 60));
+$("growRows").addEventListener("change", updateGrowth);
+$("merge").addEventListener("change", updateGrowth);
+$("delmeta").addEventListener("change", updateGrowth);
+window.addEventListener("resize", UI.debounce(() => grow.series && drawChart(), 150));
+
+$("ncommits").value = sliderFor(1440);
+reset().then(updateGrowth);
+</script>
+</body>
+</html>

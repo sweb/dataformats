@@ -1,0 +1,29 @@
+{
+  "rows": 10000000,
+  "bytes": {
+    "JSON lines": 1505052900,
+    "Protobuf (length-delimited)": 383726237,
+    "Avro binary (Kafka wire, 5B registry header)": 365002740,
+    "Avro container (null)": 315416139,
+    "Avro container (deflate)": 125111470,
+    "Avro container (snappy)": 170328537,
+    "Avro container (zstandard)": 134378391,
+    "Parquet (none)": 128430782,
+    "Parquet (snappy)": 108064032,
+    "Parquet (zstd)": 79057430,
+    "Lance": 132343145
+  },
+  "bytes_per_record": {
+    "JSON lines": 150.50529,
+    "Protobuf (length-delimited)": 38.3726237,
+    "Avro binary (Kafka wire, 5B registry header)": 36.500274,
+    "Avro container (null)": 31.5416139,
+    "Avro container (deflate)": 12.511147,
+    "Avro container (snappy)": 17.0328537,
+    "Avro container (zstandard)": 13.4378391,
+    "Parquet (none)": 12.8430782,
+    "Parquet (snappy)": 10.8064032,
+    "Parquet (zstd)": 7.905743,
+    "Lance": 13.2343145
+  }
+}

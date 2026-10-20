@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arrow Buffer Explorer</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+.bufcol { margin-bottom: 16px; }
+.bufcol h4 { margin: 0 0 6px; font-size: 0.95rem; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bufrow { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 8px; align-items: center; margin: 3px 0; }
+.bufrow .bn { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); text-align: right; }
+.cells { display: flex; flex-wrap: wrap; gap: 2px; }
+.cell { --h: 135; font-family: var(--mono); font-size: 0.72rem; min-width: 2.4em; padding: 2px 4px; border-radius: 4px; text-align: center; cursor: pointer; background: hsl(var(--h) var(--s-bg) var(--l-bg)); color: hsl(var(--h) 55% var(--l-fg)); border: 1.5px solid transparent; white-space: nowrap; max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
+.cell.bit { min-width: 1.6em; }
+.cell.null { background: var(--panel-3); color: var(--muted); }
+.cell.k-validity { --h: 95; }
+.cell.k-offsets { --h: 45; }
+.cell.unset { background: var(--panel-3); color: var(--muted); }
+.cell.pick { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); font-weight: 700; }
+.cell.out { opacity: 0.3; }
+.cell .ix { display: block; font-size: 0.6rem; opacity: 0.7; }
+.addr { font-family: var(--mono); font-size: 0.82rem; }
+.reflink { margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <div class="nav"><a href="index.html">Explorers</a><a href="protobuf.html">Protobuf</a><a href="avro.html">Avro</a><a href="parquet.html">Parquet</a><a href="iceberg.html">Iceberg</a><a class="cur" href="arrow.html">Arrow</a><a href="lance.html">Lance</a></div>
+      <h1>Apache Arrow Columnar Format</h1>
+      <p class="sub">Buffers at fixed addresses: on disk, the file is the memory layout</p>
+    </div>
+    <div class="right-tools">
+      <div class="pills" id="presets"></div>
+      <button class="icon" id="theme" title="Toggle light / dark">&#9681;</button>
+    </div>
+  </header>
+
+  <section class="grid g3">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">1</span>Schema</h3><span class="chip muted">name: type [not null]</span></div>
+      <textarea class="code" id="schema" spellcheck="false" style="min-height:150px"></textarea>
+      <p class="note">Types: int32, int64, float32, float64, utf8, bool.</p>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Rows (JSON array)</h3><span class="chip muted" id="reccount"></span></div>
+      <textarea class="code" id="rows" spellcheck="false"></textarea>
+      <div id="err" class="error hidden"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Size: bytes vs addresses</h3></div>
+      <div id="sizes"></div>
+      <table class="t" id="percol" style="margin-top:10px"></table>
+      <p class="note" id="sizenote"></p>
+      <div class="controls" style="margin-top:6px">
+        <label class="ctl">rows per batch <input type="number" id="batch" value="1000" min="1" style="width:6em"></label>
+        <button class="btn small" id="dl">Download .arrow</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">2</span>Columns as buffers<sup data-cite="arrow-columnar"></sup></h3><span class="chip muted" id="batchchip"></span></div>
+    <div class="controls" style="margin-bottom:12px">
+      <label class="ctl">read row <input type="range" id="pick" min="0" value="3" style="width:180px"><span class="mono" id="pickv"></span></label>
+      <label class="ctl">slice offset <input type="number" id="soff" value="2" min="0" style="width:5em"></label>
+      <label class="ctl">length <input type="number" id="slen" value="3" min="0" style="width:5em"></label>
+      <label class="ctl"><input type="checkbox" id="slice"> show slice</label>
+    </div>
+    <div id="buffers"></div>
+    <div class="callout" id="readnote"></div>
+    <div class="callout hidden" id="slicenote"></div>
+  </section>
+
+  <section class="card structure" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">3</span>IPC file structure<sup data-cite="arrow-columnar arrow-fbs flatbuffers-internals"></sup></h3><span class="small muted">magic, schema message, record batches (metadata + body), footer</span></div>
+    <div id="fmap" style="margin-bottom:6px"></div>
+    <div id="structure"></div>
+  </section>
+
+  <section class="grid g-hex">
+    <div class="card">
+      <div class="card-h"><h3>Binary stream view</h3><span class="chip" id="range"></span></div>
+      <div id="hex"></div>
+      <div class="legend" id="legend"></div>
+      <p class="note">Click a byte to select it, click again to move up one level. Select a Buffer struct in the RecordBatch metadata to jump to the bytes it points at.</p>
+    </div>
+    <div class="card insp">
+      <div class="card-h"><h3>Field inspector</h3><span class="chip" id="selname"></span></div>
+      <div id="inspector"></div>
+      <div id="ref" class="reflink"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h3><span class="step">4</span>Measured: <span id="benchrows"></span> rows into memory</h3><span class="chip muted" id="benchchip"></span></div>
+    <div id="bench"></div>
+    <div id="benchsrc"></div>
+  </section>
+
+  <section class="card sources" id="sources"></section>
+</div>
+
+<script src="common.js"></script>
+<script src="sources.js"></script>
+<script src="parquet-codec.js"></script>
+<script src="arrow-codec.js"></script>
+<script src="ui.js"></script>
+<script src="data/bench.js"></script>
+<script>
+"use strict";
+const { AR, PQ, UI } = DF;
+const $ = (id) => document.getElementById(id);
+UI.sources($("sources"), ["arrow-columnar", "arrow-fbs", "flatbuffers-internals"], {
+  code: ["arrow.html", "arrow-codec.js", "parquet-codec.js", "common.js"],
+  verified: "pyarrow opens, validates and memory-maps the IPC file and reads back the same rows.",
+});
+
+function readings(n, nullRate) {
+  const r = DF.rng(42);
+  return Array.from({ length: n }, () => ({
+    device_id: r.int(1000, 9999),
+    location: r.pick(["hall-a", "hall-b", "yard", "cold-storage"]),
+    temp_c: r.next() < nullRate ? null : Math.round((15 + r.next() * 30) * 4) / 4,
+  }));
+}
+
+const PRESETS = {
+  nulls: {
+    label: "Readings with nulls",
+    schema: "device_id: int32 not null\nlocation: utf8\ntemp_c: float32\n",
+    rows: [
+      { device_id: 4711, location: "hall-b", temp_c: 23.5 },
+      { device_id: 4712, location: "hall-a", temp_c: null },
+      { device_id: 4713, location: "yard", temp_c: 19.25 },
+      { device_id: 4714, location: "cold-storage", temp_c: 31.0 },
+      { device_id: 4715, location: null, temp_c: null },
+      { device_id: 4716, location: "hall-a", temp_c: 27.75 },
+    ],
+  },
+  types: {
+    label: "All the types",
+    schema: "device_id: int32 not null\nts: int64 not null\nlocation: utf8\ntemp_c: float64\nok: bool\n",
+    rows: [
+      { device_id: 4711, ts: 1790841600000, location: "hall-b", temp_c: 23.5, ok: true },
+      { device_id: 4712, ts: 1790841601000, location: "hall-a", temp_c: 19.25, ok: true },
+      { device_id: 4713, ts: 1790841602000, location: "yard", temp_c: null, ok: false },
+      { device_id: 4714, ts: 1790841603000, location: "cold-storage", temp_c: 4.5, ok: null },
+      { device_id: 4715, ts: 1790841604000, location: "hall-a", temp_c: 22.0, ok: true },
+      { device_id: 4716, ts: 1790841605000, location: "yard", temp_c: 30.25, ok: true },
+      { device_id: 4717, ts: 1790841606000, location: "hall-b", temp_c: 21.75, ok: false },
+      { device_id: 4718, ts: 1790841607000, location: "hall-b", temp_c: 24.0, ok: true },
+      { device_id: 4719, ts: 1790841608000, location: "hall-a", temp_c: 18.5, ok: true },
+    ],
+  },
+  sparse: {
+    label: "90% null",
+    schema: "device_id: int32 not null\nlocation: utf8 not null\ntemp_c: float32\n",
+    rows: readings(500, 0.9),
+  },
+  many: {
+    label: "2000 readings",
+    schema: "device_id: int32 not null\nlocation: utf8 not null\ntemp_c: float32 not null\n",
+    rows: readings(2000, 0),
+  },
+};
+
+const PQ_TYPE = { int32: ["INT32", "PLAIN"], int64: ["INT64", "PLAIN"], float32: ["FLOAT", "PLAIN"], float64: ["DOUBLE", "PLAIN"], utf8: ["BYTE_ARRAY", "DICT"] };
+const state = { cols: null, rows: [], file: null, parquet: null, gen: 0 };
+
+const explorer = new UI.Explorer({
+  structure: $("structure"), hex: $("hex"), inspector: $("inspector"), filemap: $("fmap"), chip: $("range"), chipName: $("selname"),
+  mapFlat: (n) => !n.label.startsWith("Record batch"),
+  onSelect: (n) => showRef(n),
+});
+UI.legend($("legend"), [["magic", "magic / markers"], ["length", "lengths"], ["fb", "FlatBuffers metadata"], ["validity", "validity bitmap"], ["offsets", "offsets"], ["value", "values / data"], ["padding", "padding, null slots"]]);
+UI.themeToggle($("theme"));
+
+const presetPills = Object.entries(PRESETS).map(([key, p]) => {
+  const b = UI.el("button", { class: "pill", type: "button" }, p.label);
+  b.addEventListener("click", () => loadPreset(key));
+  $("presets").append(b);
+  return [key, b];
+});
+
+function loadPreset(key) {
+  presetPills.forEach(([k, b]) => b.classList.toggle("on", k === key));
+  const p = PRESETS[key];
+  $("schema").value = p.schema;
+  $("rows").value = p.rows.length > 12 ? "[\n" + p.rows.map((r) => "  " + JSON.stringify(r)).join(",\n") + "\n]" : JSON.stringify(p.rows, null, 2);
+  rebuild(true);
+}
+
+function showError(e) {
+  $("err").classList.toggle("hidden", !e);
+  $("err").textContent = e ? e.message || String(e) : "";
+}
+
+async function rebuild(fresh) {
+  const gen = ++state.gen;
+  try {
+    const cols = AR.parseSchema($("schema").value);
+    const rows = JSON.parse($("rows").value);
+    if (!Array.isArray(rows)) throw new Error("rows must be a JSON array");
+    const file = AR.build(cols, rows, { batchRows: Number($("batch").value) || rows.length });
+    state.cols = cols;
+    state.rows = rows;
+    state.file = file;
+    showError(null);
+    $("reccount").textContent = `${rows.length} row(s)`;
+    explorer.load(file, !fresh);
+    renderBuffers();
+    let parquet = null;
+    if (cols.every((c) => PQ_TYPE[c.type]) && rows.length) {
+      const pcols = cols.map((c) => ({ name: c.name, ptype: PQ_TYPE[c.type][0], converted: c.type === "utf8" ? "UTF8" : undefined, encoding: PQ_TYPE[c.type][1], nullable: c.nullable }));
+      parquet = await PQ.build(rows.map((r) => Object.fromEntries(cols.map((c) => [c.name, r[c.name] === undefined ? null : r[c.name]]))), pcols, {});
+    }
+    if (gen !== state.gen) return;
+    state.parquet = parquet;
+    renderSizes();
+  } catch (e) {
+    if (gen === state.gen) showError(e);
+  }
+}
+
+function renderSizes() {
+  const f = state.file;
+  const json = DF.utf8(JSON.stringify(state.rows)).length;
+  const items = [{ label: "JSON", n: json, alt: true }];
+  if (state.parquet) items.push({ label: "Parquet", n: state.parquet.bytes.length, alt: true });
+  items.push({ label: "Arrow IPC file", n: f.bytes.length });
+  UI.sizeBars($("sizes"), items);
+  const rows = [`<tr><th>Column</th><th>Nulls</th><th>Arrow buffers</th><th>Parquet chunks</th></tr>`];
+  state.cols.forEach((c, ci) => {
+    const arrow = f.batches.reduce((s, b) => s + b.buffers.filter((x) => x.col === c.name).reduce((t, x) => t + x.length + ((8 - (x.length % 8)) % 8), 0), 0);
+    const nulls = f.batches.reduce((s, b) => s + b.columns[ci].nulls, 0);
+    const pq = state.parquet ? state.parquet.groups.reduce((s, g) => s + (g.chunks[ci].end - g.chunks[ci].start), 0) : null;
+    rows.push(`<tr><td class="mono">${UI.esc(c.name)}</td><td class="mono">${nulls}</td><td class="mono">${DF.fmtBytes(arrow)}</td><td class="mono">${pq === null ? "n/a" : DF.fmtBytes(pq)}</td></tr>`);
+  });
+  $("percol").innerHTML = rows.join("");
+  $("sizenote").innerHTML = state.parquet
+    ? "Arrow is deliberately the fatter format: every value keeps a full-width slot, nulls included, and nothing is compressed. It buys addressability. Parquet here: dictionary for strings, PLAIN numbers, no compression. Try <b>90% null</b>."
+    : "Parquet comparison needs types the Parquet writer here supports (no bool).";
+}
+
+function cell(cls, text, title, onClick, idx) {
+  const e = UI.el("span", { class: `cell ${cls}`, title }, idx !== undefined ? UI.el("span", { class: "ix" }, idx) : null, text);
+  if (onClick) e.addEventListener("click", onClick);
+  return e;
+}
+
+function renderBuffers() {
+  const f = state.file;
+  const b0 = f.batches[0];
+  const n = b0 ? b0.rows : 0;
+  $("batchchip").textContent = f.batches.length > 1 ? `record batch 0 of ${f.batches.length}, ${n} rows` : `${n} rows`;
+  $("pick").max = Math.max(0, n - 1);
+  if (Number($("pick").value) > n - 1) $("pick").value = Math.max(0, n - 1);
+  const pick = Number($("pick").value);
+  $("pickv").textContent = `#${pick}`;
+  const show = Math.min(n, 48);
+  const sliceOn = $("slice").checked;
+  const soff = Math.max(0, Number($("soff").value) || 0);
+  const slen = Math.max(0, Number($("slen").value) || 0);
+  const inSlice = (i) => !sliceOn || (i >= soff && i < soff + slen);
+  const wrap = $("buffers");
+  wrap.innerHTML = "";
+  if (!n) {
+    wrap.innerHTML = '<p class="note">No rows.</p>';
+    $("readnote").textContent = "";
+    $("slicenote").classList.add("hidden");
+    return;
+  }
+  const notes = [];
+  let touched = 0;
+  b0.columns.forEach((cb) => {
+    const bufInfo = (role) => b0.buffers.find((x) => x.col === cb.col.name && x.role === role);
+    const box = UI.el("div", { class: "bufcol" });
+    box.append(UI.el("h4", {}, cb.col.name, UI.el("span", { class: "chip muted" }, `${cb.col.type}${cb.col.nullable ? "" : " not null"}`), UI.el("span", { class: "small muted" }, `${cb.nulls} null(s)`)));
+    const val = cb.bufs.find((b) => b.role === "validity");
+    const vInfo = bufInfo("validity");
+    const vRow = UI.el("div", { class: "cells" });
+    if (val.omitted) {
+      vRow.append(UI.el("span", { class: "small muted" }, "not stored: no nulls in this batch (buffer length 0)"));
+    } else {
+      for (let i = 0; i < show; i++) {
+        const set = (val.bytes[i >> 3] >> (i & 7)) & 1;
+        vRow.append(cell(`bit k-validity ${set ? "" : "unset"} ${i === pick ? "pick" : ""} ${inSlice(i) ? "" : "out"}`, String(set), `row ${i}: byte ${i >> 3}, bit ${i & 7}`, () => explorer.selectOffset(vInfo.start + (i >> 3)), i));
+      }
+    }
+    box.append(UI.el("div", { class: "bufrow" }, UI.el("span", { class: "bn" }, "validity"), vRow));
+    const picked = [];
+    const isNull = cb.bufs[0].omitted ? false : !((val.bytes[pick >> 3] >> (pick & 7)) & 1);
+    if (!val.omitted) {
+      picked.push(`validity byte ${pick >> 3}, bit ${pick & 7} = ${isNull ? 0 : 1}`);
+      touched += 1;
+    }
+    for (const b of cb.bufs.filter((x) => x.role !== "validity")) {
+      const info = bufInfo(b.role);
+      const row = UI.el("div", { class: "cells" });
+      if (b.role === "offsets") {
+        for (let i = 0; i <= show; i++) {
+          const e = b.elems[i];
+          row.append(cell(`k-offsets ${i === pick || i === pick + 1 ? "pick" : ""} ${inSlice(i) || (sliceOn && i === soff + slen) ? "" : "out"}`, String(e.value), `offsets[${i}]`, () => explorer.selectOffset(info.start + e.start), i));
+        }
+      } else if (b.role === "data") {
+        for (let i = 0; i < show; i++) {
+          const e = b.elems[i];
+          if (e.value === null || e.end === e.start) {
+            row.append(cell(`null ${i === pick ? "pick" : ""} ${inSlice(i) ? "" : "out"}`, e.value === null ? "-" : '""', `row ${i}: no bytes`, null, i));
+            continue;
+          }
+          row.append(cell(`${i === pick ? "pick" : ""} ${inSlice(i) ? "" : "out"}`, e.value, `row ${i}: data[${e.start}..${e.end}]`, () => explorer.selectOffset(info.start + e.start), i));
+        }
+      } else if (b.bitmap) {
+        for (let i = 0; i < show; i++) {
+          const set = (b.bytes[i >> 3] >> (i & 7)) & 1;
+          row.append(cell(`bit ${set ? "" : "unset"} ${i === pick ? "pick" : ""} ${inSlice(i) ? "" : "out"}`, String(set), `row ${i}`, () => explorer.selectOffset(info.start + (i >> 3)), i));
+        }
+      } else {
+        for (let i = 0; i < show; i++) {
+          const e = b.elems[i];
+          row.append(cell(`${e.value === null ? "null" : ""} ${i === pick ? "pick" : ""} ${inSlice(i) ? "" : "out"}`, e.value === null ? "null" : String(e.value), `row ${i}: bytes ${e.start}..${e.end - 1} of the values buffer`, () => explorer.selectOffset(info.start + e.start), i));
+        }
+      }
+      box.append(UI.el("div", { class: "bufrow" }, UI.el("span", { class: "bn" }, b.role), row));
+      if (b.role === "values" && b.width) {
+        picked.push(`values + ${b.width} x ${pick} = byte ${b.width * pick}`);
+        touched += b.width;
+      } else if (b.role === "values") {
+        picked.push(`values byte ${pick >> 3}, bit ${pick & 7}`);
+        touched += 1;
+      } else if (b.role === "offsets") {
+        const a = b.elems[pick].value;
+        const z = b.elems[pick + 1].value;
+        picked.push(`offsets[${pick}] = ${a}, offsets[${pick + 1}] = ${z}`);
+        touched += 8 + (z - a);
+        picked.push(`data[${a}..${z}]`);
+      }
+    }
+    notes.push(`<div class="addr"><b>${UI.esc(cb.col.name)}</b>: ${picked.map(UI.esc).join(" &rarr; ")}${isNull ? " &rarr; <b>null</b>" : ""}</div>`);
+    wrap.append(box);
+  });
+  if (n > show) wrap.append(UI.el("p", { class: "note" }, `Showing the first ${show} of ${n} rows.`));
+  $("readnote").innerHTML = `<div style="margin-bottom:6px">Reading row ${pick} touches ${touched} byte(s) at computed addresses. No page to decompress, no dictionary to walk, no earlier rows to skip.</div>${notes.join("")}<div class="small muted" style="margin-top:6px">Compare: ${pick ? `Avro and JSON must parse ${pick === 1 ? "row 0" : `rows 0 to ${pick - 1}`} first to find row ${pick}` : "Avro and JSON must parse every row before the one you want"}. Parquet must decode the page the row sits in.</div>`;
+  $("slicenote").classList.toggle("hidden", !sliceOn);
+  if (sliceOn) {
+    $("slicenote").innerHTML = `<b>slice(${soff}, ${slen})</b> is the same buffers plus a new offset ${soff} and length ${slen}. 0 bytes copied: row i of the slice is row ${soff} + i of the parent, found with the same address arithmetic. That is how Arrow-based engines such as DuckDB, Polars and pandas with ArrowDtype pass data around inside one process without serializing.`;
+  }
+}
+
+function showRef(node) {
+  const box = $("ref");
+  box.innerHTML = "";
+  let ref = null;
+  for (let n = node; n; n = n.parent) if (n.meta?.ref) {
+    ref = n.meta.ref;
+    break;
+  }
+  if (!ref || !state.file) return;
+  const batch = state.file.batches[ref.batch];
+  const info = batch?.buffers.find((x) => x.name === ref.buffer);
+  if (!info) return;
+  if (!info.length) {
+    box.innerHTML = '<div class="callout">This Buffer has length 0: nothing in the body. No nulls, no bitmap.</div>';
+    return;
+  }
+  const btn = UI.el("button", { class: "btn small", type: "button" }, `show ${ref.buffer} in the body`);
+  btn.addEventListener("click", () => {
+    let target = null;
+    for (const n of DF.walk(explorer.root)) if (n.label === ref.buffer && n.start === info.start) target = n;
+    if (target) explorer.select(target, true);
+  });
+  box.append(UI.el("div", { class: "callout" }, UI.el("div", { style: "margin-bottom:6px" }, `This Buffer points at body bytes ${DF.hexAddr(info.start)} to ${DF.hexAddr(info.start + info.length - 1)}. A reader turns (offset, length) into a pointer into the mapped file.`), btn));
+}
+
+function renderBench() {
+  const b = globalThis.DF_BENCH;
+  if (!b) {
+    $("benchrows").textContent = "10,000,000";
+    $("bench").innerHTML = '<p class="note">No bench data: run <code>uv run explorer/data/export_bench.py</code>.</p>';
+    return;
+  }
+  const r = b.results["06_load"];
+  $("benchrows").textContent = r.rows.toLocaleString("en");
+  $("benchchip").textContent = "bench/06";
+  UI.benchSource($("benchsrc"), "06_load", b);
+  const rows = Object.entries(r.results).map(([k, v]) => `<tr><td>${UI.esc(k.trim())}</td><td class="mono">${v.cpu_s.toFixed(v.cpu_s < 0.01 ? 4 : 2)} s</td><td class="mono">${v.seconds.toFixed(v.seconds < 0.01 ? 4 : 2)} s</td><td class="mono">${DF.fmtBytes(v.in_memory)}</td></tr>`);
+  $("bench").innerHTML = `<table class="t"><tr><th>Path</th><th>CPU</th><th>Wall</th><th>In memory</th></tr>${rows.join("")}</table>
+    <p class="note">On disk: JSON lines ${DF.fmtBytes(r.jsonl_bytes)}, Parquet ${DF.fmtBytes(r.parquet_bytes)}. Parquet to Arrow decodes, Arrow to pandas with ArrowDtype shares the buffers and costs next to nothing. Parquet is how the data rests, Arrow is how it moves: two ends of one pipe, not alternatives.</p>`;
+}
+
+$("schema").addEventListener("input", UI.debounce(() => rebuild(false), 350));
+$("rows").addEventListener("input", UI.debounce(() => rebuild(false), 350));
+$("batch").addEventListener("input", UI.debounce(() => rebuild(false), 300));
+for (const id of ["pick", "soff", "slen", "slice"]) $(id).addEventListener("input", () => state.file && renderBuffers());
+$("dl").addEventListener("click", () => state.file && UI.download(state.file.bytes, "readings.arrow"));
+
+renderBench();
+loadPreset("nulls");
+</script>
+</body>
+</html>

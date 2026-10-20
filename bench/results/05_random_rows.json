@@ -1,0 +1,26 @@
+{
+  "rows": 10000000,
+  "lookups": 1000,
+  "row_group_size": 100000,
+  "results": {
+    "Parquet point": {
+      "seconds": 2.4710141969999313,
+      "cpu_s": 7.75684893
+    },
+    "Lance point": {
+      "seconds": 0.19438729299963597,
+      "cpu_s": 0.312493409
+    },
+    "Parquet batch": {
+      "seconds": 0.0738394159998279,
+      "cpu_s": 1.1916540390000012
+    },
+    "Lance batch": {
+      "seconds": 0.021047842999905697,
+      "cpu_s": 0.10623742800000002
+    }
+  },
+  "parquet_point_bytes_read": 1132371265,
+  "parquet_bytes": 113583383,
+  "lance_bytes": 132343145
+}

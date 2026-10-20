@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lance Random Access</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+.vs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 760px) { .vs { grid-template-columns: minmax(0, 1fr); } }
+.fmt h4 { margin: 0 0 4px; font-size: 1rem; }
+.kv { display: grid; grid-template-columns: 10em 1fr; gap: 4px 10px; font-size: 0.9rem; margin-top: 8px; }
+.kv .k { color: var(--muted); }
+.kv .v { font-family: var(--mono); }
+.bspan.hit { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.bspan.idle { background: var(--panel-3); }
+.bspan.tick { min-width: 1px; padding: 0; border: none; background: var(--accent); }
+.logbar { display: grid; grid-template-columns: 17em minmax(0, 1fr) 6.5em; gap: 8px; align-items: center; margin: 6px 0; font-size: 0.88rem; }
+.logbar .bar { height: 18px; border-radius: 4px; background: var(--panel-3); overflow: hidden; }
+.logbar .bar div { height: 100%; border-radius: 4px; }
+.logbar .n { font-family: var(--mono); text-align: right; }
+ol.steps { margin: 6px 0 0; padding-left: 20px; }
+ol.steps li { margin: 4px 0; font-size: 0.9rem; }
+ol.steps code { font-size: 0.82rem; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <div class="nav"><a href="index.html">Explorers</a><a href="protobuf.html">Protobuf</a><a href="avro.html">Avro</a><a href="parquet.html">Parquet</a><a href="iceberg.html">Iceberg</a><a href="arrow.html">Arrow</a><a class="cur" href="lance.html">Lance</a></div>
+      <h1>Lance: Rows by Id</h1>
+      <p class="sub">Random access: what is the smallest thing a reader has to decode?</p>
+    </div>
+    <div class="right-tools">
+      <button class="icon" id="theme" title="Toggle light / dark">&#9681;</button>
+    </div>
+  </header>
+
+  <div class="callout" style="margin-bottom:14px" id="intro"></div>
+
+  <section class="card" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">1</span>Fetch random rows by position</h3><span class="small muted">the access pattern of ML training (shuffled batches) and vector search (ANN index returns row ids)</span></div>
+    <div class="controls">
+      <label class="ctl">rows <select id="n"><option>1</option><option>10</option><option>100</option><option selected>1000</option></select></label>
+      <span class="ctl">as</span><div id="mode"></div>
+      <label class="ctl">Parquet reader <select id="unit"><option value="rowgroup">read_row_group (bench/05)</option><option value="chunk">only the selected columns</option></select></label>
+      <button class="btn small" id="reroll">new random rows</button>
+    </div>
+    <div class="flex" id="colpick" style="margin-top:10px"></div>
+  </section>
+
+  <section class="vs" style="margin-bottom:14px">
+    <div class="card fmt">
+      <div class="card-h"><h3>Apache Parquet</h3><span class="chip muted" id="pqchip"></span></div>
+      <div class="big-num" id="pqbig"></div>
+      <div class="kv" id="pqkv"></div>
+    </div>
+    <div class="card fmt">
+      <div class="card-h"><h3>Lance</h3><span class="chip muted" id="lnchip"></span></div>
+      <div class="big-num" id="lnbig"></div>
+      <div class="kv" id="lnkv"></div>
+    </div>
+  </section>
+
+  <div class="callout warn" id="verdict" style="margin-bottom:14px"></div>
+
+  <section class="card" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">2</span>What gets decoded, on the row axis</h3><span class="small muted">row 0 to <span id="totalrows"></span>, left to right. Click a mark to zoom there.</span></div>
+    <div id="strip"></div>
+    <p class="note" id="stripnote"></p>
+    <div class="card-h" style="margin-top:14px"><h3>Zoom: around row <span id="zoomrow"></span></h3><label class="ctl">window <select id="zoomw"><option value="20000">20k rows</option><option value="250000" selected>250k rows</option><option value="2000000">2M rows</option></select></label></div>
+    <div id="zoom"></div>
+  </section>
+
+  <section class="grid g2">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">3</span>The unit of decoding<sup data-cite="lance-encoding"></sup></h3><span class="small muted">log scale</span></div>
+      <div id="units"></div>
+      <p class="note">Encodings make positions unaddressable: with dictionary indices in RLE runs and zstd on top, the only way to row i is through the rows before it in the same unit. So the unit's size is the price of one lookup. Lance keeps the unit small, Parquet keeps it large on purpose because large units compress and scan better.</p>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>How row <span id="steprow"></span> is found</h3><span class="small muted">column <span id="stepcol"></span></span></div>
+      <div class="small muted">Parquet</div>
+      <ol class="steps" id="pqsteps"></ol>
+      <div class="small muted" style="margin-top:10px">Lance</div>
+      <ol class="steps" id="lnsteps"></ol>
+    </div>
+  </section>
+
+  <section class="grid g2">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">4</span>Measured (bench/05)</h3><span class="chip muted" id="benchchip"></span></div>
+      <table class="t" id="measured"></table>
+      <p class="note" id="modelcheck"></p>
+      <div id="benchsrc"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>The other column of the scoreboard</h3></div>
+      <table class="t" id="fields"></table>
+      <p class="note" id="costs"></p>
+    </div>
+  </section>
+
+  <section class="card sources" id="sources"></section>
+</div>
+
+<script src="common.js"></script>
+<script src="sources.js"></script>
+<script src="ui.js"></script>
+<script src="lance-model.js"></script>
+<script src="data/bench.js"></script>
+<script>
+"use strict";
+const { LM, UI } = DF;
+const $ = (id) => document.getElementById(id);
+UI.themeToggle($("theme"));
+const cite = UI.sources($("sources"), ["lance-encoding", "lance-proto", "parquet-thrift", "arrow-parquet-defaults"], {
+  code: ["lance.html", "lance-model.js", "data/bench.js", "common.js"],
+});
+
+if (!globalThis.DF_BENCH) {
+  document.querySelector(".page").innerHTML += '<div class="error">data/bench.js is missing. Run bench/05, then <code>uv run explorer/data/export_bench.py</code>.</div>';
+  throw new Error("no bench data");
+}
+
+const model = LM.build(DF_BENCH);
+const P = model.parquet;
+const L = model.lance;
+const state = { mode: "point", seed: 7, ids: [], cols: new Set(P.columns.map((_, i) => i)), zoom: null };
+
+$("intro").innerHTML = `This page writes no Lance bytes. It replays lookups on the layout metadata${cite("lance-proto")} of the real files from ${UI.repoLink("bench/05_random_rows.py", "bench/05")}: ${P.rows.toLocaleString("en")} rows, Parquet ${DF.fmtBytes(P.bytes)} (${P.groups.length} row groups, ${P.codec}), Lance ${DF.fmtBytes(L.bytes)} (format ${L.version}, ${L.files.length} files). The page and chunk sizes come from the files' own metadata, read by ${UI.repoLink("explorer/data/export_bench.py", "export_bench.py")} on ${DF_BENCH.generated}. How the files were made and measured: step 4.`;
+$("totalrows").textContent = P.rows.toLocaleString("en");
+
+UI.tabs($("mode"), [["point", "one lookup per row"], ["batch", "one batch"]], (m) => {
+  state.mode = m;
+  render();
+}, "point");
+
+P.columns.forEach((name, i) => {
+  const cb = UI.el("input", { type: "checkbox" });
+  cb.checked = true;
+  cb.addEventListener("change", () => {
+    if (cb.checked) state.cols.add(i);
+    else state.cols.delete(i);
+    if (!state.cols.size) {
+      cb.checked = true;
+      state.cols.add(i);
+    }
+    render();
+  });
+  $("colpick").append(UI.el("label", { class: "ctl" }, cb, name));
+});
+
+function roll() {
+  state.ids = LM.randomIds(Number($("n").value), P.rows, state.seed);
+  state.zoom = state.ids[0];
+}
+
+function kv(el, pairs) {
+  el.innerHTML = pairs.map(([k, v]) => `<div class="k">${UI.esc(k)}</div><div class="v">${v}</div>`).join("");
+}
+
+function fmtN(n) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} G`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} M`;
+  if (n >= 1e4) return `${(n / 1e3).toFixed(0)} k`;
+  return n.toLocaleString("en");
+}
+
+function render() {
+  const cols = [...state.cols].sort((a, b) => a - b);
+  const unit = $("unit").value;
+  const sim = LM.simulate(model, state.ids, { mode: state.mode, columns: cols, parquetUnit: unit });
+  const n = state.ids.length;
+  const wanted = n * cols.length;
+  $("pqchip").textContent = unit === "rowgroup" ? "pyarrow read_row_group" : "column chunks";
+  $("lnchip").textContent = `format ${L.version}, mini-block`;
+  $("pqbig").textContent = DF.fmtBytes(sim.parquet.bytes);
+  $("lnbig").textContent = DF.fmtBytes(sim.lance.bytes);
+  kv($("pqkv"), [
+    ["units decoded", `${sim.parquet.units.toLocaleString("en")} column chunk(s)`],
+    ["values decoded", `${fmtN(sim.parquet.values)} for ${fmtN(wanted)} wanted`],
+    ["per row", DF.fmtBytes(sim.parquet.bytes / n)],
+    ["file read", `${(sim.parquet.bytes / P.bytes).toFixed(sim.parquet.bytes / P.bytes < 0.1 ? 3 : 1)} x the file`],
+  ]);
+  kv($("lnkv"), [
+    ["units decoded", `${sim.lance.units.toLocaleString("en")} mini-block chunk(s)`],
+    ["values decoded", `${fmtN(sim.lance.values)} for ${fmtN(wanted)} wanted`],
+    ["per row", DF.fmtBytes(sim.lance.bytes / n)],
+    ["file read", `${(sim.lance.bytes / L.bytes).toFixed(3)} x the files`],
+  ]);
+  const times = sim.parquet.bytes / P.bytes;
+  $("verdict").innerHTML = `To return ${n.toLocaleString("en")} row(s), Parquet ${unit === "rowgroup" ? "reads and decodes" : "decodes"} ${DF.fmtBytes(sim.parquet.bytes)}${times >= 1 ? `: <b>the whole file ${times.toFixed(1)} times</b>` : ""}. Lance: ${DF.fmtBytes(sim.lance.bytes)}, <b>${(sim.parquet.bytes / sim.lance.bytes).toFixed(0)}x less</b>. ${state.mode === "batch" ? "As one batch every unit is decoded only once, which narrows the gap." : "Each lookup starts from scratch, like a data loader or a serving path."}`;
+  renderStrip(sim, cols);
+  renderZoom(cols);
+}
+
+function renderStrip(sim, cols) {
+  const lanes = [{
+    label: "Parquet row groups",
+    spans: P.groups.map((g) => {
+      const hits = sim.parquet.touched.get(g.index) || 0;
+      return { start: g.start, end: g.start + g.rows, cls: hits ? "hit" : "idle", label: hits > 1 ? `${hits}x` : "", title: `row group ${g.index}: rows ${g.start} to ${g.start + g.rows - 1}, ${hits} lookup(s)` };
+    }),
+  }];
+  for (const c of cols) {
+    lanes.push({ label: `Lance ${P.columns[c]}`, spans: sim.lance.touched.filter((t) => t.col === c).map((t) => ({ start: t.start, end: t.end, cls: "tick", title: `rows ${t.start} to ${t.end - 1}` })) });
+  }
+  const rowFmt = (x) => `row ${Math.round(x).toLocaleString("en")}`;
+  const pxRows = P.rows / Math.max(1, $("strip").clientWidth - 160);
+  $("stripnote").textContent = `Lance marks are drawn at least 1 px wide. At this scale 1 px is about ${Math.round(pxRows).toLocaleString("en")} rows, a Lance chunk is ${model.lance.files[0].cols[0][0].perChunk}: the real marks are about ${Math.max(1, Math.round(pxRows / model.lance.files[0].cols[0][0].perChunk))}x thinner.`;
+  UI.boundaryStrip($("strip"), { from: 0, to: P.rows, lanes, fmt: rowFmt, onPick: (x) => {
+    state.zoom = state.ids.reduce((best, id) => (Math.abs(id - x) < Math.abs(best - x) ? id : best), state.ids[0]);
+    renderZoom(cols);
+  } });
+}
+
+function renderZoom(cols) {
+  const id = state.zoom;
+  const w = Number($("zoomw").value);
+  const from = Math.max(0, id - w / 2);
+  const to = Math.min(P.rows, from + w);
+  const g = LM.locateGroup(P, id);
+  const lanes = [{ label: "Parquet", spans: P.groups.filter((x) => x.start + x.rows > from && x.start < to).map((x) => ({ start: x.start, end: x.start + x.rows, cls: x === g ? "hit" : "idle", label: x === g ? `row group ${x.index}: ${x.rows.toLocaleString("en")} rows` : "" })) }];
+  for (const c of cols) {
+    const loc = LM.locateLance(L, id, c);
+    lanes.push({ label: `Lance ${P.columns[c]}`, spans: [{ start: loc.rowStart, end: loc.rowEnd, cls: "tick", title: `chunk ${loc.chunk}: rows ${loc.rowStart} to ${loc.rowEnd - 1}` }] });
+  }
+  UI.boundaryStrip($("zoom"), { from, to, cursor: id, lanes, fmt: (x) => `row ${Math.round(x).toLocaleString("en")}` });
+  $("zoomrow").textContent = id.toLocaleString("en");
+  renderSteps(id, cols);
+}
+
+function renderSteps(id, cols) {
+  const c = cols.includes(P.columns.indexOf("temp_c")) ? P.columns.indexOf("temp_c") : cols[0];
+  const g = LM.locateGroup(P, id);
+  const ch = g.cols[c];
+  const loc = LM.locateLance(L, id, c);
+  $("steprow").textContent = id.toLocaleString("en");
+  $("stepcol").textContent = P.columns[c];
+  $("pqsteps").innerHTML = [
+    `footer: row ${id.toLocaleString("en")} is in row group ${g.index} (rows ${g.start.toLocaleString("en")} to ${(g.start + g.rows - 1).toLocaleString("en")})`,
+    `column chunk <code>${P.columns[c]}</code> at byte ${ch.offset.toLocaleString("en")}, ${DF.fmtBytes(ch.bytes)} ${P.codec}`,
+    `read it, decompress it to ${DF.fmtBytes(ch.raw)}, decode dictionary and RLE runs: ${g.rows.toLocaleString("en")} values`,
+    `keep value ${(id - g.start).toLocaleString("en")}, throw away ${(g.rows - 1).toLocaleString("en")}`,
+    P.hasPageIndex ? `a page index could narrow this to one page${cite("parquet-thrift")}` : `no page index in this file${cite("parquet-thrift")}, and with the default 1 MiB pages${cite("arrow-parquet-defaults")} each chunk here (at most ${DF.fmtBytes(Math.max(...P.groups.flatMap((x) => x.cols.map((y) => y.raw))))} uncompressed) is a single page anyway`,
+  ].map((s) => `<li>${s}</li>`).join("");
+  $("lnsteps").innerHTML = [
+    `row ${id.toLocaleString("en")} is in data file ${loc.file.index} (rows ${loc.file.start.toLocaleString("en")} onward), page ${loc.pi} of column <code>${P.columns[c]}</code>`,
+    `chunk table (cached after open, ${loc.page.metaBytes} B for ${loc.page.chunks} chunks${cite("lance-encoding")}): chunk ${loc.chunk} of ${loc.page.perChunk} values`,
+    `read about ${DF.fmtBytes(loc.page.chunkBytes)} and decode ${loc.page.perChunk} values${loc.page.dictBytes ? `, plus the ${loc.page.dictBytes} B dictionary once` : ""}`,
+    `keep value ${(id - loc.rowStart).toLocaleString("en")} of the chunk`,
+  ].map((s) => `<li>${s}</li>`).join("");
+}
+
+function renderUnits() {
+  const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const rgBytes = avg(P.groups.map((g) => g.cols.reduce((s, c) => s + c.bytes, 0)));
+  const ci = P.columns.indexOf("temp_c") >= 0 ? P.columns.indexOf("temp_c") : 0;
+  const chunkBytes = avg(P.groups.map((g) => g.cols[ci].bytes));
+  const lpages = L.files.flatMap((f) => f.cols[ci]);
+  const lchunk = avg(lpages.map((p) => p.chunkBytes));
+  const li = P.columns.indexOf("location") >= 0 ? P.columns.indexOf("location") : 0;
+  const lpagesLoc = L.files.flatMap((f) => f.cols[li]);
+  const lchunkLoc = avg(lpagesLoc.map((p) => p.chunkBytes));
+  const items = [
+    ["Parquet row group, all columns", rgBytes, `${P.groups[0].rows.toLocaleString("en")} rows`, "var(--muted)"],
+    [`Parquet column chunk, ${P.columns[ci]}`, chunkBytes, `${P.groups[0].rows.toLocaleString("en")} values`, "var(--muted)"],
+    [`Lance chunk, ${P.columns[ci]}`, lchunk, `${lpages[0].perChunk} values`, "var(--accent)"],
+    [`Lance chunk, ${P.columns[li]} (dictionary)`, lchunkLoc, `${lpagesLoc[0].perChunk} values`, "var(--accent)"],
+    ["the value you wanted", 4, "1 value", "var(--ok)"],
+  ];
+  const max = Math.log10(Math.max(...items.map((x) => x[1])));
+  $("units").innerHTML = items.map(([label, bytes, what, color]) => `<div class="logbar"><span>${UI.esc(label)}<br><span class="small muted">${what}</span></span><div class="bar"><div style="width:${Math.max(2, (Math.log10(bytes) / max) * 100)}%;background:${color}"></div></div><span class="n">${DF.fmtBytes(bytes)}</span></div>`).join("");
+}
+
+function renderMeasured() {
+  const r = DF_BENCH.results["05_random_rows"];
+  $("benchchip").textContent = `${r.lookups} random rows of ${r.rows.toLocaleString("en")}`;
+  UI.benchSource($("benchsrc"), "05_random_rows", DF_BENCH);
+  const row = (k) => r.results[k];
+  const line = (label, k) => `<tr><td>${label}</td><td class="mono">${(row(k).seconds * 1000).toFixed(0)} ms</td><td class="mono">${(row(k).cpu_s * 1000).toFixed(0)} ms</td></tr>`;
+  $("measured").innerHTML = `<tr><th></th><th>Wall</th><th>CPU</th></tr>${line("Parquet, one lookup per row", "Parquet point")}${line("Lance, one lookup per row", "Lance point")}${line("Parquet, one batch", "Parquet batch")}${line("Lance, one batch", "Lance batch")}`;
+  const ids = LM.randomIds(r.lookups, P.rows, 7);
+  const sim = LM.simulate(model, ids, { mode: "point" });
+  $("modelcheck").innerHTML = `CPU, one lookup per row: <b>${(row("Parquet point").cpu_s / row("Lance point").cpu_s).toFixed(0)}x</b> in favour of Lance. Bytes Parquet read, measured: ${DF.fmtBytes(r.parquet_point_bytes_read)}; this page's model of the same: ${DF.fmtBytes(sim.parquet.bytes)}. The Lance side of the model rests on one inference: 2 bytes of chunk table per mini-block chunk${cite("lance-encoding")}, which gives 1024 values per chunk on every page of these files.`;
+}
+
+function renderFields() {
+  $("fields").innerHTML = `<tr><th>Column</th><th>Lance field id</th><th>Parquet field_id</th></tr>` + L.fields.map((f) => `<tr><td class="mono">${UI.esc(f.name)}</td><td class="mono">${f.id}</td><td class="small muted">none in this file</td></tr>`).join("");
+  $("costs").innerHTML = `Lance identifies columns by field id: the number camp, with Protobuf and Iceberg. Parquet can store a field_id per column too${cite("parquet-thrift")} (the Iceberg page writes one), but the bench file was written without them, so its columns are known by name only. ` +
+    `Small chunks have a price: the same rows take ${DF.fmtBytes(L.bytes)} as Lance against ${DF.fmtBytes(P.bytes)} as Parquet (${((L.bytes / P.bytes - 1) * 100).toFixed(0)}% more), because small units compress worse. Addressability is a layout decision made at write time.`;
+}
+
+$("n").addEventListener("change", () => {
+  roll();
+  render();
+});
+$("unit").addEventListener("change", render);
+$("zoomw").addEventListener("change", () => renderZoom([...state.cols].sort((a, b) => a - b)));
+$("reroll").addEventListener("click", () => {
+  state.seed++;
+  roll();
+  render();
+});
+
+roll();
+renderUnits();
+renderMeasured();
+renderFields();
+render();
+</script>
+</body>
+</html>

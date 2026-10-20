@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avro Container Explorer</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <div class="nav"><a href="index.html">Explorers</a><a href="protobuf.html">Protobuf</a><a class="cur" href="avro.html">Avro</a><a href="parquet.html">Parquet</a><a href="iceberg.html">Iceberg</a><a href="arrow.html">Arrow</a><a href="lance.html">Lance</a></div>
+      <h1>Apache Avro Binary Format</h1>
+      <p class="sub">Positional bytes, the schema in the header, resolution by name</p>
+    </div>
+    <div class="right-tools">
+      <div class="pills" id="presets"></div>
+      <button class="icon" id="theme" title="Toggle light / dark">&#9681;</button>
+    </div>
+  </header>
+
+  <section class="grid g3">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">1</span>Writer schema (JSON)</h3></div>
+      <textarea class="code" id="schema" spellcheck="false"></textarea>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Records (JSON array)</h3><span class="chip muted" id="reccount"></span></div>
+      <textarea class="code" id="records" spellcheck="false"></textarea>
+      <div id="err" class="error hidden"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Where does the schema live?</h3></div>
+      <div id="modeTabs" style="margin-bottom:10px"></div>
+      <div class="controls" id="ocfCtl" style="margin-bottom:10px">
+        <label class="ctl">codec <select id="codec"><option value="null">null</option><option value="deflate">deflate</option></select></label>
+        <label class="ctl">records / block <input type="number" id="block" value="100" min="1" style="width:5em"></label>
+        <button class="btn small" id="resync">new sync marker</button>
+      </div>
+      <div class="controls hidden" id="regCtl" style="margin-bottom:10px">
+        <label class="ctl">schema id <input type="number" id="sid" value="42" min="0" style="width:6em"></label>
+      </div>
+      <div id="modeNote" class="note" style="margin:0 0 10px"></div>
+      <div id="sizes"></div>
+      <p class="note" id="amort"></p>
+      <div class="flex" style="margin-top:6px"><button class="btn small" id="dl">Download</button></div>
+    </div>
+  </section>
+
+  <section class="card structure" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">2</span>File structure</h3><span class="small muted">box rows drill down along the selection</span></div>
+    <div id="fmap" style="margin-bottom:6px"></div>
+    <div id="structure"></div>
+  </section>
+
+  <section class="grid g-hex">
+    <div class="card">
+      <div class="card-h"><h3>Binary stream view</h3><span class="chip" id="range"></span></div>
+      <div id="hex"></div>
+      <div class="legend" id="legend"></div>
+      <p class="note">Click a byte to select its field, click again to move up one level. The ASCII column shows the schema in plain text.</p>
+    </div>
+    <div class="card insp">
+      <div class="card-h"><h3>Field inspector</h3><span class="chip" id="selname"></span></div>
+      <div id="inspector"></div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <div class="card-h"><h3><span class="step">3</span>Start reading at byte N<sup data-cite="avro-spec"></sup></h3><span class="chip muted">what a parallel reader of a file split does</span></div>
+    <p id="splitHint" class="note"></p>
+    <div id="splitBody" class="hidden">
+      <div id="splitPick"></div>
+      <div id="splitStrip"></div>
+      <div id="splitSummary" class="callout"></div>
+      <table class="t" id="splitTable"></table>
+    </div>
+  </section>
+
+  <section class="grid g2">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">4</span>Reader schema (JSON)</h3><span class="chip muted">what the consumer expects</span></div>
+      <div class="pills" id="scenarios" style="margin-bottom:10px"></div>
+      <textarea class="code" id="reader" spellcheck="false"></textarea>
+      <div id="scenarioNote" class="callout hidden"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Schema resolution<sup data-cite="avro-spec"></sup></h3><span id="verdict"></span></div>
+      <div id="rerr" class="error hidden"></div>
+      <table class="t" id="report"></table>
+      <div class="small muted" style="margin:12px 0 4px">Records as the consumer sees them</div>
+      <pre class="json" id="decoded"></pre>
+      <div class="small muted" style="margin:14px 0 4px">Same bytes, reader schema only, no writer schema</div>
+      <div id="positional"></div>
+    </div>
+  </section>
+
+  <section class="card sources" id="sources"></section>
+</div>
+
+<script src="common.js"></script>
+<script src="sources.js"></script>
+<script src="avro-codec.js"></script>
+<script src="ui.js"></script>
+<script>
+"use strict";
+const { AV, UI } = DF;
+const $ = (id) => document.getElementById(id);
+const cite = UI.sources($("sources"), ["avro-spec", "confluent-wire"], {
+  code: ["avro.html", "avro-codec.js", "common.js"],
+  verified: "fastavro reads both container file variants and agrees on Parsing Canonical Form and the CRC-64-AVRO fingerprint.",
+});
+
+const READING_SCHEMA = {
+  type: "record",
+  name: "Reading",
+  namespace: "conference.avro",
+  fields: [
+    { name: "device_id", type: "long" },
+    { name: "location", type: "string" },
+    { name: "temp_c", type: "float" },
+  ],
+};
+
+function readings(n) {
+  const r = DF.rng(42);
+  return Array.from({ length: n }, () => ({
+    device_id: r.int(1000, 9999),
+    location: r.pick(["hall-a", "hall-b", "yard", "cold-storage"]),
+    temp_c: Math.round((15 + r.next() * 30) * 4) / 4,
+  }));
+}
+
+const PRESETS = {
+  reading: {
+    label: "Sensor readings",
+    schema: READING_SCHEMA,
+    records: [
+      { device_id: 4711, location: "hall-b", temp_c: 23.5 },
+      { device_id: 4712, location: "hall-a", temp_c: 19.25 },
+    ],
+  },
+  many: {
+    label: "500 readings",
+    schema: READING_SCHEMA,
+    records: readings(500),
+    block: 100,
+  },
+  complex: {
+    label: "All the types",
+    schema: {
+      type: "record",
+      name: "Device",
+      namespace: "conference.avro",
+      fields: [
+        { name: "id", type: "long" },
+        { name: "status", type: { type: "enum", name: "Status", symbols: ["OK", "WARN", "FAULT"] } },
+        { name: "online", type: "boolean" },
+        { name: "tags", type: { type: "array", items: "string" } },
+        { name: "limits", type: { type: "map", values: "double" } },
+        { name: "location", type: { type: "record", name: "Location", fields: [{ name: "site", type: "string" }, { name: "floor", type: "int" }] } },
+        { name: "firmware", type: ["null", "string"], default: null },
+        { name: "mac", type: { type: "fixed", name: "Mac", size: 6 } },
+      ],
+    },
+    records: [
+      { id: -42, status: "WARN", online: true, tags: ["eu", "calibrated"], limits: { min: -5.0, max: 45.5 }, location: { site: "hall-b", floor: 2 }, firmware: "1.2.4", mac: "AB12CD" },
+      { id: 7, status: "OK", online: false, tags: [], limits: {}, location: { site: "yard", floor: 0 }, firmware: null, mac: "EF34GH" },
+    ],
+  },
+};
+
+const MODES = {
+  ocf: `Object Container File: the full writer schema as JSON in the header, then blocks of records. Self-describing.${cite("avro-spec")}`,
+  raw: `Raw binary datum: no schema, no tags, no framing. Without the exact writer schema you cannot even find where a field ends.${cite("avro-spec")}`,
+  single: `Single-object encoding (Avro spec): 2 marker bytes and an 8-byte schema fingerprint per message.${cite("avro-spec")}`,
+  confluent: `Confluent wire format (Kafka): a magic byte and a 4-byte Schema Registry id per message.${cite("confluent-wire")}`,
+};
+
+const state = { mode: "ocf", scenario: "same", sync: randomSync(), built: null, writerJson: null, gen: 0, offset: null, splitGen: 0 };
+
+function randomSync() {
+  return crypto.getRandomValues(new Uint8Array(16));
+}
+
+const explorer = new UI.Explorer({ structure: $("structure"), hex: $("hex"), inspector: $("inspector"), filemap: $("fmap"), chip: $("range"), chipName: $("selname"), mapFlat: (n) => n.label.startsWith("message") });
+UI.legend($("legend"), [["magic", "magic / marker"], ["meta", "metadata"], ["schema", "schema JSON"], ["sync", "sync marker"], ["count", "count / branch"], ["length", "length / size"], ["value", "value"], ["compressed", "compressed block"]]);
+UI.themeToggle($("theme"));
+
+const presetPills = Object.entries(PRESETS).map(([key, p]) => {
+  const b = UI.el("button", { class: "pill", type: "button" }, p.label);
+  b.addEventListener("click", () => loadPreset(key));
+  $("presets").append(b);
+  return [key, b];
+});
+
+UI.tabs($("modeTabs"), [["ocf", "Container file"], ["raw", "Raw datum"], ["single", "Single object"], ["confluent", "Kafka + registry"]], (m) => {
+  state.mode = m;
+  rebuild(false);
+}, "ocf");
+
+function loadPreset(key) {
+  state.offset = null;
+  presetPills.forEach(([k, b]) => b.classList.toggle("on", k === key));
+  const p = PRESETS[key];
+  $("schema").value = JSON.stringify(p.schema, null, 2);
+  $("records").value = p.records.length > 20 ? "[\n" + p.records.map((r) => "  " + JSON.stringify(r)).join(",\n") + "\n]" : JSON.stringify(p.records, null, 2);
+  $("block").value = p.block || 100;
+  rebuild(true, true);
+}
+
+function showError(id, e) {
+  $(id).classList.toggle("hidden", !e);
+  $(id).textContent = e ? e.message || String(e) : "";
+}
+
+async function rebuild(resetReader, freshSelection) {
+  const gen = ++state.gen;
+  $("ocfCtl").classList.toggle("hidden", state.mode !== "ocf");
+  $("regCtl").classList.toggle("hidden", state.mode !== "confluent");
+  $("modeNote").innerHTML = MODES[state.mode];
+  try {
+    const schemaJson = JSON.parse($("schema").value);
+    const records = JSON.parse($("records").value);
+    if (!Array.isArray(records)) throw new Error("records must be a JSON array");
+    $("reccount").textContent = `${records.length} record(s)`;
+    const built = await AV.build(schemaJson, records, {
+      mode: state.mode,
+      codec: $("codec").value,
+      blockSize: Math.max(1, Number($("block").value) || 1),
+      sync: state.sync,
+      schemaId: Number($("sid").value) || 0,
+    });
+    if (gen !== state.gen) return;
+    const changedSchema = JSON.stringify(schemaJson) !== JSON.stringify(state.writerJson);
+    state.built = built;
+    state.writerJson = schemaJson;
+    showError("err", null);
+    explorer.load(built, !freshSelection);
+    const json = DF.utf8(JSON.stringify(records)).length;
+    const datum = built.info.datumBytes;
+    const items = [{ label: "JSON (minified)", n: json, alt: true }, { label: "Avro records only", n: datum }];
+    if (state.mode !== "raw") items.push({ label: "With framing", n: built.bytes.length });
+    UI.sizeBars($("sizes"), items);
+    const overhead = built.bytes.length - datum;
+    const per = records.length ? (built.bytes.length / records.length).toFixed(1) : "0";
+    $("amort").innerHTML = state.mode === "ocf"
+      ? `Container overhead ${overhead} B (schema, sync markers, block headers${$("codec").value === "deflate" ? ", plus or minus what deflate does to each block" : ""}), paid once per file. ${per} B per record in total. Try "500 readings".`
+      : state.mode === "raw"
+        ? `${per} B per record. Smallest possible, and unreadable without the writer schema.`
+        : `${overhead / Math.max(1, records.length)} B of framing per message, the schema itself is fetched out of band. ${per} B per message in total.`;
+    if (resetReader || changedSchema) applyScenario(state.scenario);
+    else resolve();
+    renderSplit();
+  } catch (e) {
+    if (gen === state.gen) showError("err", e);
+  }
+}
+
+function topRecord(s) {
+  return s && s.type === "record" ? s : null;
+}
+
+const SCENARIOS = [
+  ["same", "Same as writer", (s) => "Reader and writer agree."],
+  ["reorder", "Reorder fields", (s) => {
+    s.fields.reverse();
+    return "Fields in reverse order. Resolution is by name, the bytes stay positional: <b>works</b>.";
+  }],
+  ["add-default", "Add field + default", (s) => {
+    s.fields.push({ name: "firmware", type: "string", default: "unknown" });
+    return "The reader expects <code>firmware</code>, the writer never wrote it, the default fills it: <b>works</b>.";
+  }],
+  ["add-nodefault", "Add field, no default", (s) => {
+    s.fields.push({ name: "site_id", type: "long" });
+    return "The reader requires <code>site_id</code>, nobody wrote it, and there is no default: <b>BREAKS</b>. The consumer fails before it reads a single record.";
+  }],
+  ["drop", "Drop a field", (s) => {
+    const f = s.fields.pop();
+    return `The reader no longer has <code>${f.name}</code>. The decoder still has to read it (using the writer schema) to find the next record, then throws it away: <b>works</b>.`;
+  }],
+  ["rename", "Rename a field", (s) => {
+    const f = s.fields[1] || s.fields[0];
+    const old = f.name;
+    f.name = old === "location" ? "site" : `${old}_v2`;
+    return `Renamed <code>${old}</code> to <code>${f.name}</code>. Matching is by name, so the reader finds no <code>${f.name}</code> in the writer schema: <b>BREAKS</b>.`;
+  }],
+  ["alias", "Rename + alias", (s) => {
+    const f = s.fields[1] || s.fields[0];
+    const old = f.name;
+    f.name = old === "location" ? "site" : `${old}_v2`;
+    f.aliases = [old];
+    return `Renamed <code>${old}</code> to <code>${f.name}</code> and declared <code>"aliases": ["${old}"]</code>. The rename is now explicit: <b>works</b>.`;
+  }],
+  ["widen", "Widen a type", (s) => {
+    const promote = { int: "long", float: "double", long: "double" };
+    const f = s.fields.find((x) => typeof x.type === "string" && promote[x.type]);
+    if (!f) return "No int, long or float field to widen.";
+    const old = f.type;
+    f.type = promote[old];
+    return `<code>${f.name}</code> is now ${f.type} instead of ${old}. A permitted promotion: <b>works</b>.`;
+  }],
+  ["narrow", "Narrow a type", (s) => {
+    const narrow = { long: "int", double: "float", float: "int" };
+    const f = s.fields.find((x) => typeof x.type === "string" && narrow[x.type]);
+    if (!f) return "No long, double or float field to narrow.";
+    const old = f.type;
+    f.type = narrow[old];
+    return `<code>${f.name}</code> is now ${f.type} instead of ${old}. Not a permitted promotion: <b>BREAKS</b>.`;
+  }],
+];
+
+const scenarioPills = SCENARIOS.map(([key, label]) => {
+  const b = UI.el("button", { class: "pill", type: "button" }, label);
+  b.addEventListener("click", () => applyScenario(key));
+  $("scenarios").append(b);
+  return [key, b];
+});
+
+function applyScenario(key) {
+  state.scenario = key;
+  scenarioPills.forEach(([k, b]) => b.classList.toggle("on", k === key));
+  if (!state.writerJson) return;
+  const s = JSON.parse(JSON.stringify(state.writerJson));
+  const note = topRecord(s) ? SCENARIOS.find(([k]) => k === key)[2](s) : "The writer schema is not a record.";
+  $("reader").value = JSON.stringify(s, null, 2);
+  $("scenarioNote").innerHTML = note;
+  $("scenarioNote").classList.toggle("hidden", key === "same");
+  resolve();
+}
+
+function resolve() {
+  if (!state.built) return;
+  let reader;
+  try {
+    reader = AV.parseSchema(JSON.parse($("reader").value)).root;
+    showError("rerr", null);
+  } catch (e) {
+    showError("rerr", e);
+    return;
+  }
+  const res = AV.resolveAndRead(state.built.schema, reader, state.built.datums);
+  $("verdict").innerHTML = res.error ? UI.statusChip("error") : `<span class="chip ok">resolves</span>`;
+  $("report").innerHTML = `<tr><th>Field</th><th>Outcome</th><th>Why</th></tr>` + res.report.map((r) =>
+    `<tr><td class="mono">${UI.esc(r.path)}</td><td>${UI.statusChip(r.status)}</td><td class="small">${UI.esc(r.note)}</td></tr>`).join("");
+  if (res.error) {
+    $("decoded").textContent = `SchemaResolutionError: ${res.error}\n\nNot a single record can be read.`;
+  } else {
+    const shown = res.values.slice(0, 5);
+    $("decoded").textContent = DF.toJSON(shown) + (res.values.length > 5 ? `\n... ${res.values.length - 5} more` : "");
+  }
+  const pos = AV.readPositionally(reader, state.built.datums.slice(0, 1))[0];
+  const same = AV.canonical(reader) === AV.canonical(state.built.schema);
+  let html;
+  if (!pos) html = '<p class="note">No records.</p>';
+  else if (pos.error) html = `<div class="callout bad">Decoding record 0 with the reader schema as if it were the writer schema fails: <code>${UI.esc(pos.error)}</code></div>`;
+  else if (same) html = `<div class="callout ok">Identical schemas, so positional decoding happens to work.</div>`;
+  else if (pos.leftover === 0 && JSON.stringify(Object.values(pos.value)) === JSON.stringify(Object.values(AV.dec(new AV.Reader(state.built.datums[0]), state.built.schema)))) html = `<div class="callout ok">Same values, different names: the byte layout did not change, so positional decoding gets lucky here. Proper resolution still matches by name, which is why the rename above is judged on names alone.</div>`;
+  else html = `<div class="callout warn">No error, ${pos.leftover} byte(s) left over, and this is what comes out of record 0:<pre class="json" style="margin-top:6px">${UI.esc(DF.toJSON(pos.value))}</pre>The bytes carry no names, so without the writer schema nothing tells you this is wrong.</div>`;
+  $("positional").innerHTML = html;
+}
+
+let picker = null;
+
+function renderSplit() {
+  const b = state.built;
+  const ok = b && (state.mode === "ocf" || state.mode === "raw") && b.datums.length > 1;
+  $("splitBody").classList.toggle("hidden", !ok);
+  $("splitHint").classList.toggle("hidden", ok);
+  if (!ok) {
+    $("splitHint").innerHTML = b && b.datums.length < 2
+      ? "Needs more than one record. Try <b>500 readings</b>."
+      : "Single-object and Kafka framing wrap one message each: there is no file to split. Switch to <b>Container file</b> or <b>Raw datum</b>.";
+    return;
+  }
+  const max = b.bytes.length - 1;
+  if (state.offset === null || state.offset > max) state.offset = Math.floor(max * 0.45);
+  picker = UI.offsetPicker($("splitPick"), { max, value: state.offset, onChange: (v) => {
+    state.offset = v;
+    drawSplit(true);
+  } });
+  drawSplit(false);
+}
+
+function describe(v) {
+  return UI.esc(DF.shorten(DF.toJSON(v, 0), 70));
+}
+
+function recordSpans(b) {
+  return (b.recordSpans || []).map((r, i) => ({ start: r.start, end: r.end, cls: `rec${i % 2 ? " alt" : ""}`, label: `#${i}`, title: `record ${i}` }));
+}
+
+async function drawSplit(follow) {
+  const gen = ++state.splitGen;
+  const b = state.built;
+  const off = state.offset;
+  if (follow) explorer.select(explorer.hex.leaf(off), true);
+  if (state.mode === "raw") {
+    const attempts = AV.readRawFrom(b.bytes, off, b.schema, b.recordSpans);
+    const from = Math.max(0, off - 40);
+    const shownEnd = attempts.slice(0, 12).reduce((m, a) => Math.max(m, a.end), off);
+    const to = Math.min(b.bytes.length, Math.max(off + 320, Math.min(shownEnd + 20, off + 900)));
+    UI.boundaryStrip($("splitStrip"), {
+      from, to, cursor: off,
+      lanes: [
+        { label: "true records", spans: recordSpans(b) },
+        { label: `reader from byte ${off}`, spans: attempts.map((a) => ({ start: a.start, end: a.end, cls: a.kind, label: a.kind === "ok" ? `#${a.record}` : a.kind === "silent" ? "?" : "", title: a.kind === "error" ? a.note : a.kind === "ok" ? `real record ${a.record}` : "not a real record" })) },
+      ],
+      onPick: (x) => picker.set(x),
+    });
+    const silent = attempts.filter((a) => a.kind === "silent").length;
+    const err = attempts.find((a) => a.kind === "error");
+    const firstOk = attempts.findIndex((a) => a.kind === "ok");
+    let msg;
+    let cls = "warn";
+    if (firstOk === 0) {
+      cls = "ok";
+      msg = `Byte ${off} is exactly where record ${attempts[0].record} starts. Pure luck: raw Avro has no tags and no markers, nothing confirms a boundary.`;
+    } else if (firstOk > 0) {
+      msg = `${silent} fake record(s) decoded without error, then the reader happened to fall onto record ${attempts[firstOk].record}. <b>It cannot tell which were real.</b>`;
+    } else if (err && !silent) {
+      cls = "bad";
+      msg = `Error right away: <code>${UI.esc(err.note)}</code>.`;
+    } else if (err) {
+      msg = `${silent} fake record(s) decoded <b>without complaint</b>, then: <code>${UI.esc(err.note)}</code>.`;
+    } else {
+      msg = `${silent} fake record(s), no error until the end of the data.`;
+    }
+    $("splitSummary").className = `callout ${cls}`;
+    $("splitSummary").innerHTML = msg + " Raw datums have no markers. With no tags or wire types either, a misaligned read is only caught when a value happens to be invalid, such as a string that is not UTF-8. The fix is the container, not the encoding.";
+    const rows = attempts.slice(0, 8).map((a) => `<tr><td class="mono">${a.start}</td><td class="mono">${a.end - a.start} B</td><td class="mono small">${a.kind === "error" ? `<span class="chip bad">error</span> ${UI.esc(a.note)}` : describe(a.value)}</td><td>${a.kind === "ok" ? `<span class="chip ok">record ${a.record}</span>` : a.kind === "error" ? "" : '<span class="chip warn">not a record</span>'}</td></tr>`);
+    if (attempts.length > 8) rows.push(`<tr><td colspan="4" class="small muted">... ${attempts.length - 8} more</td></tr>`);
+    $("splitTable").innerHTML = "<tr><th>At byte</th><th>Size</th><th>What the reader decodes</th><th>Truth</th></tr>" + rows.join("");
+    return;
+  }
+  const res = await AV.readOcfFrom(b, off);
+  if (gen !== state.splitGen) return;
+  const header = b.root.children[0];
+  const fileSpans = [{ start: header.start, end: header.end, cls: "hdr", label: "header", title: "magic, schema, sync" }];
+  for (const blk of b.root.children.slice(1)) {
+    const [cnt, , body, sy] = blk.children;
+    fileSpans.push({ start: blk.start, end: body.start, cls: "hdr", label: "", title: `${blk.label}: count + size` });
+    if (!b.recordSpans) fileSpans.push({ start: body.start, end: body.end, cls: "rec", label: "compressed", title: `${blk.label}: deflate` });
+    fileSpans.push({ start: sy.start, end: sy.end, cls: "sync", label: "sync", title: "sync marker" });
+  }
+  fileSpans.push(...recordSpans(b));
+  const readerSpans = [];
+  if (res.scanEnd > res.scanStart) readerSpans.push({ start: res.scanStart, end: res.scanEnd, cls: "scan", label: "scan for sync", title: "skipped: scanning for the 16-byte sync marker" });
+  if (res.syncAt >= 0 && res.blocks.length) {
+    readerSpans.push({ start: res.syncAt, end: res.syncAt + 16, cls: "sync", label: "sync", title: "sync marker found" });
+    for (const blk of res.blocks) {
+      readerSpans.push({ start: blk.start, end: blk.dataStart, cls: "hdr", label: "", title: `block ${blk.blockNo}: ${blk.count} records, ${blk.size} B` });
+      if (blk.records[0]?.start !== null && blk.records[0]?.start !== undefined) {
+        for (const r of blk.records) readerSpans.push({ start: r.start, end: r.end, cls: r.ok ? "ok" : "silent", label: `#${r.record}`, title: `record ${r.record}` });
+      } else {
+        readerSpans.push({ start: blk.dataStart, end: blk.dataStart + blk.size, cls: blk.records.every((r) => r.ok) ? "ok" : "silent", label: `block ${blk.blockNo}`, title: `${blk.count} records, decompressed and decoded` });
+      }
+      readerSpans.push({ start: blk.end - 16, end: blk.end, cls: "sync", label: "", title: blk.syncOk ? "sync matches" : "sync MISMATCH" });
+    }
+  }
+  const from = Math.max(0, off - 40);
+  const firstEnd = res.blocks.length ? res.blocks[0].end : res.scanEnd;
+  const to = Math.min(b.bytes.length, Math.max(off + 320, Math.min(firstEnd + 30, off + 2400)));
+  UI.boundaryStrip($("splitStrip"), {
+    from, to, cursor: off,
+    lanes: [
+      { label: "file", spans: fileSpans },
+      { label: `split reader from ${off}`, spans: readerSpans },
+    ],
+    onPick: (x) => picker.set(x),
+  });
+  let msg;
+  let cls = "ok";
+  if (!res.blocks.length) {
+    cls = "warn";
+    msg = `No sync marker after byte ${off}: this split contains no block start, so it reads nothing. The reader of the previous split finishes the block it is in. Nothing is read twice, nothing is lost.`;
+  } else {
+    const recs = res.blocks.reduce((n, blk) => n + blk.count, 0);
+    const allOk = res.blocks.every((blk) => blk.syncOk && blk.records.every((r) => r.ok));
+    cls = allOk ? "ok" : "bad";
+    msg = `The reader already knows the schema and the sync marker from the header. It skipped ${res.scanEnd - res.scanStart} byte(s) scanning for the marker, found it at byte ${res.syncAt}, then decoded ${res.blocks.length} block(s), ${recs} records: <b>${allOk ? "every one correct" : "MISMATCH"}</b>. The records before byte ${res.syncAt} belong to the previous split.`;
+  }
+  $("splitSummary").className = `callout ${cls}`;
+  $("splitSummary").innerHTML = msg + " 16 random bytes per file make a false match practically impossible: that is what makes an Avro file splittable.";
+  const rows = res.blocks.slice(0, 6).map((blk) => `<tr><td class="mono">${blk.start}</td><td class="mono">block ${blk.blockNo}</td><td class="mono">${blk.count} records, ${blk.size} B${b.codec === "deflate" ? " deflate" : ""}</td><td class="mono small">${describe(blk.records[0]?.value)}${blk.count > 1 ? " ..." : ""}</td><td>${blk.records.every((r) => r.ok) && blk.syncOk ? '<span class="chip ok">correct</span>' : '<span class="chip bad">mismatch</span>'}</td></tr>`);
+  $("splitTable").innerHTML = res.blocks.length ? "<tr><th>At byte</th><th>Block</th><th>Content</th><th>First record</th><th>Check</th></tr>" + rows.join("") : "";
+}
+
+$("schema").addEventListener("input", UI.debounce(() => rebuild(false), 350));
+$("records").addEventListener("input", UI.debounce(() => rebuild(false), 350));
+$("codec").addEventListener("change", () => rebuild(false));
+$("block").addEventListener("input", UI.debounce(() => rebuild(false), 250));
+$("sid").addEventListener("input", UI.debounce(() => rebuild(false), 250));
+$("resync").addEventListener("click", () => {
+  state.sync = randomSync();
+  rebuild(false);
+});
+$("reader").addEventListener("input", UI.debounce(() => {
+  scenarioPills.forEach(([, b]) => b.classList.remove("on"));
+  $("scenarioNote").classList.add("hidden");
+  resolve();
+}, 300));
+$("dl").addEventListener("click", () => {
+  if (!state.built) return;
+  const ext = { ocf: "avro", raw: "bin", single: "soe", confluent: "kafka.bin" }[state.mode];
+  UI.download(state.built.bytes, `${(state.writerJson.name || "data").toLowerCase()}.${ext}`);
+});
+
+loadPreset("reading");
+</script>
+</body>
+</html>

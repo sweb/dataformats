@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+bench/data/
+explorer/verify/out/
+avro-out/
+talk/

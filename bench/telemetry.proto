@@ -1,0 +1,13 @@
+// Reference only. 01_size.py builds this descriptor in code so the bench needs
+// no protoc; keep the two in sync.
+syntax = "proto3";
+package bench;
+
+message Reading {
+  int32  device_id        = 1;
+  int64  timestamp_us     = 2;
+  string location         = 3;
+  string firmware_version = 4;
+  string status           = 5;
+  float  temp_c           = 6;
+}

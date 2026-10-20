@@ -1,0 +1,11 @@
+memory guard: budget 8 GiB, 49 GiB available
+10,000,000 rows. JSON lines 1.4 GiB, Parquet (zstd) 75.4 MiB
+
+path                                                  wall       CPU  vs JSON->pandas    in memory
+JSON -> pandas (chunked)                           19.67 s   19.69 s               1x    586.5 MiB
+JSON -> Arrow (pyarrow.json, multithreaded)         0.50 s   11.32 s              39x    691.4 MiB
+Parquet -> Arrow                                    0.11 s    0.70 s             177x    399.4 MiB
+  Arrow -> pandas (conversion only)                 0.02 s    0.04 s             792x    510.2 MiB
+  Arrow -> pandas (ArrowDtype, no copy)             0.00 s    0.00 s           24280x    399.4 MiB
+
+-> bench/results/06_load.json

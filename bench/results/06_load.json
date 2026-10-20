@@ -1,0 +1,32 @@
+{
+  "rows": 10000000,
+  "jsonl_bytes": 1505052900,
+  "parquet_bytes": 79057430,
+  "results": {
+    "JSON -> pandas (chunked)": {
+      "seconds": 19.671504835000633,
+      "cpu_s": 19.691391396,
+      "in_memory": 615002872
+    },
+    "JSON -> Arrow (pyarrow.json, multithreaded)": {
+      "seconds": 0.5046360890000869,
+      "cpu_s": 11.315855078999999,
+      "in_memory": 725002740
+    },
+    "Parquet -> Arrow": {
+      "seconds": 0.11096890200042253,
+      "cpu_s": 0.6975890510000013,
+      "in_memory": 418752740
+    },
+    "  Arrow -> pandas (conversion only)": {
+      "seconds": 0.024829901999510184,
+      "cpu_s": 0.03544284100000539,
+      "in_memory": 535002872
+    },
+    "  Arrow -> pandas (ArrowDtype, no copy)": {
+      "seconds": 0.000810193999313924,
+      "cpu_s": 0.0007892300000023056,
+      "in_memory": 418752872
+    }
+  }
+}

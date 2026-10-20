@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protobuf Wire Explorer</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <div class="nav"><a href="index.html">Explorers</a><a class="cur" href="protobuf.html">Protobuf</a><a href="avro.html">Avro</a><a href="parquet.html">Parquet</a><a href="iceberg.html">Iceberg</a><a href="arrow.html">Arrow</a><a href="lance.html">Lance</a></div>
+      <h1>Protocol Buffers Wire Format</h1>
+      <p class="sub">Tags, varints, and a schema that is not in the data</p>
+    </div>
+    <div class="right-tools">
+      <div class="pills" id="presets"></div>
+      <button class="icon" id="theme" title="Toggle light / dark">&#9681;</button>
+    </div>
+  </header>
+
+  <section class="grid g3">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">1</span>Writer schema (.proto)</h3><span class="chip muted">lives in your repo</span></div>
+      <textarea class="code" id="proto" spellcheck="false"></textarea>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Message (JSON)</h3></div>
+      <div id="framingRow" class="flex hidden" style="margin-bottom:8px"><span class="small muted">a JSON array is written as</span><div id="framing"></div></div>
+      <textarea class="code" id="json" spellcheck="false"></textarea>
+      <div id="err" class="error hidden"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Size on the wire</h3></div>
+      <div id="sizes"></div>
+      <div id="omitted"></div>
+      <div class="flex" style="margin-top:10px"><button class="btn small" id="dl">Download .bin</button></div>
+    </div>
+  </section>
+
+  <section class="card structure" style="margin-bottom:14px">
+    <div class="card-h">
+      <h3><span class="step">2</span>Message structure<sup data-cite="pb-encoding"></sup></h3>
+    </div>
+    <div id="structure"></div>
+  </section>
+
+  <section class="grid g-hex">
+    <div class="card">
+      <div class="card-h"><h3>Binary stream view</h3><span class="chip" id="range"></span></div>
+      <div id="hex"></div>
+      <div class="legend" id="legend"></div>
+      <p class="note">Click a byte to select its field, click again to move up one level.</p>
+    </div>
+    <div class="card insp">
+      <div class="card-h"><h3>Field inspector</h3><span class="chip" id="selname"></span></div>
+      <div id="inspector"></div>
+    </div>
+  </section>
+
+  <section class="grid g2">
+    <div class="card">
+      <div class="card-h"><h3><span class="step">3</span>Reader schema (.proto)<sup data-cite="pb-proto3"></sup></h3><span class="chip muted">compiled into the consumer</span></div>
+      <div class="pills" id="scenarios" style="margin-bottom:10px"></div>
+      <textarea class="code" id="reader" spellcheck="false" style="min-height:180px"></textarea>
+      <div id="scenarioNote" class="callout hidden"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>What the consumer sees</h3></div>
+      <div id="rerr" class="error hidden"></div>
+      <table class="t" id="report"></table>
+      <div id="rawNote" class="callout hidden"></div>
+      <div class="lbl2 small muted" id="decodedLbl" style="margin:12px 0 4px">Decoded object</div>
+      <pre class="json" id="decoded"></pre>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h3><span class="step">4</span>Varint lab<sup data-cite="pb-encoding"></sup></h3>
+      <label class="ctl">number <input type="text" id="vnum" value="300" size="14"></label>
+    </div>
+    <table class="t" id="vtable"></table>
+  </section>
+
+  <section class="card sources" id="sources"></section>
+</div>
+
+<script src="common.js"></script>
+<script src="sources.js"></script>
+<script src="protobuf-codec.js"></script>
+<script src="ui.js"></script>
+<script>
+"use strict";
+const { PB, UI } = DF;
+const $ = (id) => document.getElementById(id);
+const cite = UI.sources($("sources"), ["pb-encoding", "pb-proto3", "pb-techniques", "pb-protoc"], {
+  code: ["protobuf.html", "protobuf-codec.js", "common.js"],
+  verified: "The encoder is byte-identical to the protobuf library, the schema-less view prints exactly what protoc --decode_raw prints.",
+});
+
+function readings(n) {
+  const r = DF.rng(42);
+  return Array.from({ length: n }, () => ({
+    device_id: r.int(1000, 9999),
+    location: r.pick(["hall-a", "hall-b", "yard", "cold-storage"]),
+    temp_c: Math.round((15 + r.next() * 30) * 4) / 4,
+  }));
+}
+
+const PRESETS = {
+  reading: {
+    label: "Sensor reading",
+    proto: `syntax = "proto3";
+
+message Reading {
+  uint64 device_id = 1;
+  string location = 2;
+  float temp_c = 3;
+}
+`,
+    json: { device_id: 4711, location: "hall-b", temp_c: 23.5 },
+  },
+  many: {
+    label: "500 readings",
+    proto: `syntax = "proto3";
+
+message Reading {
+  uint64 device_id = 1;
+  string location = 2;
+  float temp_c = 3;
+}
+`,
+    json: readings(500),
+  },
+  nested: {
+    label: "Nested & repeated",
+    proto: `syntax = "proto3";
+
+message Reading {
+  uint64 device_id = 1;
+  Location location = 2;
+  repeated float temps = 3;
+  repeated string tags = 4;
+  Status status = 5;
+}
+
+message Location {
+  string site = 1;
+  int32 floor = 2;
+}
+
+enum Status {
+  OK = 0;
+  WARN = 1;
+  FAULT = 2;
+}
+`,
+    json: { device_id: 4711, location: { site: "hall-b", floor: 2 }, temps: [23.5, 23.75, 24.0], tags: ["calibrated", "eu"], status: "WARN" },
+  },
+  numbers: {
+    label: "Numbers & defaults",
+    proto: `syntax = "proto3";
+
+message Numbers {
+  int32 small = 1;
+  int32 big = 2;
+  int32 negative = 3;
+  sint32 negative_zigzag = 4;
+  fixed32 hash = 5;
+  bool flag = 6;
+  int32 zero = 7;
+  optional int32 explicit_zero = 8;
+  string empty = 9;
+}
+`,
+    json: { small: 1, big: 300, negative: -1, negative_zigzag: -1, hash: 3735928559, flag: true, zero: 0, explicit_zero: 0, empty: "" },
+  },
+};
+
+const state = { root: null, scenario: "same", writer: null, encoded: null, framing: "delimited" };
+
+const explorer = new UI.Explorer({ structure: $("structure"), hex: $("hex"), inspector: $("inspector"), chip: $("range"), chipName: $("selname") });
+UI.legend($("legend"), [["tag", "tag (field number + wire type)"], ["length", "length prefix"], ["value", "value"]]);
+UI.themeToggle($("theme"));
+
+const presetPills = Object.entries(PRESETS).map(([key, p]) => {
+  const b = UI.el("button", { class: "pill", type: "button" }, p.label);
+  b.addEventListener("click", () => loadPreset(key));
+  $("presets").append(b);
+  return [key, b];
+});
+
+function loadPreset(key) {
+  presetPills.forEach(([k, b]) => b.classList.toggle("on", k === key));
+  $("proto").value = PRESETS[key].proto;
+  const j = PRESETS[key].json;
+  $("json").value = Array.isArray(j) && j.length > 20 ? "[\n" + j.map((r) => "  " + JSON.stringify(r)).join(",\n") + "\n]" : JSON.stringify(j, null, 2);
+  update(true);
+}
+
+/** The message the JSON describes: the first one no other message uses as a field type. */
+function rootOf(schema, prefer) {
+  if (prefer && schema.messages[prefer]) return prefer;
+  const nested = new Set(Object.values(schema.messages).flatMap((m) => m.fields.map((f) => f.type)));
+  return schema.order.find((n) => !nested.has(n)) || schema.order[0];
+}
+
+function showError(id, e) {
+  $(id).classList.toggle("hidden", !e);
+  $(id).textContent = e ? e.message || String(e) : "";
+}
+
+function update(resetReader) {
+  try {
+    const schema = PB.parseProto($("proto").value);
+    state.root = rootOf(schema);
+    const value = JSON.parse($("json").value);
+    const multi = Array.isArray(value);
+    const encoded = multi ? PB.encodeMany(schema, state.root, value, state.framing) : PB.encode(schema, state.root, value);
+    encoded.multi = multi;
+    encoded.count = multi ? value.length : 1;
+    $("framingRow").classList.toggle("hidden", !multi);
+    state.writer = schema;
+    state.encoded = encoded;
+    showError("err", null);
+    const json = DF.utf8(JSON.stringify(value)).length;
+    UI.sizeBars($("sizes"), [
+      { label: "JSON (minified)", n: json, alt: true },
+      { label: "Protobuf", n: encoded.bytes.length },
+    ]);
+    const om = encoded.omitted;
+    $("omitted").innerHTML = om.length
+      ? `<p class="note">Not on the wire at all: ${om.map((o) => `<code>${UI.esc(o.path)}</code> (${UI.esc(o.reason)})`).join(", ")}. proto3 skips default values, a reader cannot tell "0" from "not set".${cite("pb-proto3")}</p>`
+      : `<p class="note">${((1 - encoded.bytes.length / json) * 100).toFixed(0)}% smaller than JSON. Every byte is either a tag, a length or payload.</p>`;
+    if (multi) {
+      $("omitted").innerHTML += `<p class="note">${(encoded.bytes.length / encoded.count).toFixed(1)} B per message. ${state.framing === "wrapper"
+        ? "As one message: a reader must parse all of it, into memory, on one thread, before using the first reading."
+        : `As a delimited stream: no header, no schema, no markers between messages.${cite("pb-techniques")}`}</p>`;
+    }
+    explorer.load(encoded, true);
+    if (resetReader) applyScenario(state.scenario);
+    else decodeReader();
+  } catch (e) {
+    showError("err", e);
+  }
+}
+
+const SCENARIOS = [
+  ["same", "Same as writer", () => "Reader and writer agree."],
+  ["rename", "Rename a field", (s, m) => {
+    const f = m.fields[1] || m.fields[0];
+    const old = f.name;
+    f.name = `${old}_v2`;
+    return `Renamed <code>${old}</code> to <code>${f.name}</code>. Names never travel, matching is by number: <b>free</b>.`;
+  }],
+  ["renumber", "Renumber a field", (s, m) => {
+    const f = m.fields[m.fields.length - 1];
+    const old = f.number;
+    f.number = Math.max(...m.fields.map((x) => x.number)) + 1;
+    return `Moved <code>${f.name}</code> from ${old} to ${f.number}. The reader now looks for a number nobody writes: <b>silent default</b>, and field ${old} is skipped as unknown.`;
+  }],
+  ["drop", "Older reader", (s, m) => {
+    const f = m.fields.pop();
+    return `This reader was compiled before <code>${f.name}</code> existed. It skips field ${f.number} using only the wire type: <b>forward compatible</b>.`;
+  }],
+  ["add", "Newer reader", (s, m) => {
+    const n = Math.max(...m.fields.map((x) => x.number)) + 1;
+    m.fields.push({ name: "firmware", type: "string", number: n, label: "" });
+    return `The reader expects <code>string firmware = ${n}</code>, which this writer never sends. It gets the default <code>""</code>: <b>backward compatible</b>, but indistinguishable from an empty value.`;
+  }],
+  ["type", "Change a type", (s, m) => {
+    const swaps = { int32: "sint32", int64: "sint64", uint32: "sint32", uint64: "sint64", sint32: "int32", sint64: "int64", float: "fixed32", fixed32: "float", double: "fixed64", fixed64: "double" };
+    const f = m.fields.find((x) => swaps[x.type]);
+    if (!f) return "No numeric field to change.";
+    const old = f.type;
+    f.type = swaps[old];
+    return `Changed <code>${f.name}</code> from ${old} to ${f.type}. Same wire type, so nothing fails. The same bytes are just read differently: <b>silent corruption</b>.`;
+  }],
+  ["raw", "No .proto", (s) => {
+    s.messages = {};
+    s.enums = {};
+    s.order = [];
+    return `No <code>.proto</code> at all: the file three years later, in a bucket, without the repo. The bytes carry field numbers and wire types, nothing else. That is all <code>protoc --decode_raw</code> can print.${cite("pb-protoc")} No names, and every value has more than one possible type: <b>guesswork</b>.`;
+  }],
+];
+
+const RAW_READER = `// no .proto: the reader has nothing but the bytes
+// same as: protoc --decode_raw < reading.bin
+`;
+
+const scenarioPills = SCENARIOS.map(([key, label]) => {
+  const b = UI.el("button", { class: "pill", type: "button" }, label);
+  b.addEventListener("click", () => applyScenario(key));
+  $("scenarios").append(b);
+  return [key, b];
+});
+
+function applyScenario(key) {
+  state.scenario = key;
+  scenarioPills.forEach(([k, b]) => b.classList.toggle("on", k === key));
+  if (!state.writer) return;
+  const s = PB.cloneSchema(state.writer);
+  const m = s.messages[state.root];
+  const fn = SCENARIOS.find(([k]) => k === key)[2];
+  const note = fn(s, m);
+  $("reader").value = s.order.length ? PB.serializeProto(s) : RAW_READER;
+  $("scenarioNote").innerHTML = note;
+  $("scenarioNote").classList.toggle("hidden", key === "same");
+  decodeReader();
+}
+
+function decodeReader() {
+  if (!state.encoded) return;
+  try {
+    const payload = state.encoded.multi ? state.encoded.payloads[0] : state.encoded.bytes;
+    if (!payload) throw new Error("no message to decode");
+    const raw = !hasSchema($("reader").value);
+    $("rawNote").classList.toggle("hidden", !raw || !state.encoded.multi);
+    if (raw) return decodeRawView(payload);
+    $("decodedLbl").textContent = "Decoded object";
+    const reader = PB.parseProto($("reader").value);
+    const { value, report } = PB.decodeWithReader(payload, reader, rootOf(reader, state.root), state.writer, state.root);
+    showError("rerr", null);
+    $("report").innerHTML = `<tr><th>Reader field</th><th>#</th><th>Outcome</th><th>Why</th></tr>` + report.map((r) =>
+      `<tr><td class="mono">${UI.esc(r.path.replace(/#\d+$/, "") + (r.path.includes("#") ? r.field : ""))}</td><td class="mono">${r.number}</td><td>${UI.statusChip(r.status)}</td><td class="small">${UI.esc(r.note)}</td></tr>`).join("");
+    $("decoded").textContent = (state.encoded.multi ? "// first message of the stream\n" : "") + DF.toJSON(value);
+  } catch (e) {
+    showError("rerr", e);
+  }
+}
+
+/** False for an empty reader: nothing but comments and the syntax line. */
+function hasSchema(src) {
+  return src.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, "").replace(/syntax\s*=\s*"[^"]*"\s*;/, "").trim() !== "";
+}
+
+function rawRows(fields, prefix) {
+  return fields.flatMap((f) => {
+    const num = prefix + f.number;
+    const could = PB.interpretations(f).map((o) => `<div><span class="muted">${UI.esc(o.types.join(" / "))}:</span> <span class="mono">${UI.esc(o.value)}</span></div>`).join("");
+    const row = `<tr><td class="mono">${num}</td><td class="mono">${PB.WT_NAME[f.wt]}</td><td class="mono small">${DF.hex(f.bytes, 12)}</td><td class="small">${could}</td></tr>`;
+    return [row, ...(f.children ? rawRows(f.children, num + ".") : [])];
+  });
+}
+
+function decodeRawView(payload) {
+  const fields = PB.decodeRaw(payload);
+  showError("rerr", null);
+  $("report").innerHTML = `<tr><th>#</th><th>Wire type</th><th>Bytes</th><th>Could be</th></tr>` + rawRows(fields, "").join("");
+  $("decodedLbl").textContent = state.encoded.multi ? "protoc --decode_raw, first message of the file" : "protoc --decode_raw";
+  $("decoded").textContent = PB.formatRaw(fields);
+  if (state.encoded.multi) $("rawNote").innerHTML = rawFileNote();
+}
+
+/** What protoc --decode_raw makes of the whole file, not just the first message. */
+function rawFileNote() {
+  const { bytes, count, payloads, framing } = state.encoded;
+  let fields;
+  try {
+    fields = PB.decodeRaw(bytes);
+  } catch (e) {
+    return `The whole file through <code>protoc --decode_raw</code>: <b>Failed to parse input</b> (${UI.esc(e.message)}). Byte 0 is the length of message 0 (${payloads[0].length}), and a reader without the schema takes it for a tag. Nothing in the file says it is a stream of messages.`;
+  }
+  if (framing === "wrapper") {
+    return `The whole file parses: field 1, ${fields.length} times, each a nested message. That it is one list of ${count} readings, and what field 1 means, is not in the bytes.`;
+  }
+  return `The whole file through <code>protoc --decode_raw</code> parses without an error, into ${fields.length} top-level field(s) that are not readings: byte 0, the length of message 0 (${payloads[0].length}), is read as a tag. Nothing in the file says it is a stream of messages.`;
+}
+
+UI.tabs($("framing"), [["delimited", "delimited stream"], ["wrapper", "repeated field in one message"]], (f) => {
+  state.framing = f;
+  update(false);
+}, "delimited");
+
+function varintRow(label, bytes, note) {
+  const hex = DF.hex(bytes);
+  return `<tr><td>${label}</td><td class="mono">${hex}</td><td class="mono">${bytes.length} B</td><td class="small muted">${note}</td></tr>`;
+}
+
+function varintLab() {
+  const raw = $("vnum").value.trim();
+  let n;
+  try {
+    n = BigInt(raw);
+  } catch {
+    $("vtable").innerHTML = `<tr><td class="error">not an integer</td></tr>`;
+    return;
+  }
+  const rows = [];
+  rows.push(`<tr><th>Encoding</th><th>Bytes</th><th>Size</th><th></th></tr>`);
+  if (n >= 0n) rows.push(varintRow("uint64 / int64 (varint)", DF.varint(n), "7 bits per byte, MSB = continue"));
+  else rows.push(varintRow("int32 / int64 (varint)", DF.varint(BigInt.asUintN(64, n)), "negative: sign-extended to 64 bit, always 10 bytes"));
+  rows.push(varintRow("sint64 (zigzag varint)", DF.varint(DF.zigzag(n)), `zigzag(${n}) = ${DF.zigzag(n)}`));
+  if (n >= -2147483648n && n <= 4294967295n) rows.push(varintRow("fixed32 / sfixed32", DF.le32(Number(BigInt.asIntN(32, n))), "always 4 bytes, little endian"));
+  rows.push(varintRow("fixed64 / sfixed64", DF.le64(n), "always 8 bytes, little endian"));
+  $("vtable").innerHTML = rows.join("");
+}
+
+$("proto").addEventListener("input", UI.debounce(() => update(true), 350));
+$("json").addEventListener("input", UI.debounce(() => update(false), 300));
+$("reader").addEventListener("input", UI.debounce(() => {
+  scenarioPills.forEach(([, b]) => b.classList.remove("on"));
+  $("scenarioNote").classList.add("hidden");
+  decodeReader();
+}, 300));
+$("vnum").addEventListener("input", varintLab);
+$("dl").addEventListener("click", () => state.encoded && UI.download(state.encoded.bytes, `${state.root.toLowerCase()}.bin`));
+
+loadPreset("reading");
+varintLab();
+</script>
+</body>
+</html>
